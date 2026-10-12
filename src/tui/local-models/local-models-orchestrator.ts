@@ -1591,9 +1591,10 @@ export class LocalModelsOrchestrator {
    * stops a model or starts a download (`selectManagedEngine`).
    */
   async chooseEngine(engine: "atomic-core" | "llama-server"): Promise<boolean> {
-    // Through the queue so the choice supersedes a waiting start instead of
-    // racing it: a start that reads the old engine must not follow the switch.
-    return this.operations.run(() => this.chooseEngineNow(engine), false);
+    // Queued behind any start or stop instead of racing it, and without
+    // replacing it: a load in progress finishes, then the running check in
+    // selectManagedEngine refuses the change. Choosing never cancels a model.
+    return this.operations.run(() => this.chooseEngineNow(engine), false, false);
   }
 
   private async chooseEngineNow(engine: "atomic-core" | "llama-server"): Promise<boolean> {
