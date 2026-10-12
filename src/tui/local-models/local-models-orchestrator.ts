@@ -394,8 +394,11 @@ export class LocalModelsOrchestrator {
   async shutdown(): Promise<void> {
     this.closing = true;
     if (getConfig().localModels.managed.engine === "atomic-core") this.backendAbort?.abort();
+    // close() aborts every queued operation synchronously, so an owned start
+    // sees its own signal first and exits quietly; then reach the rest.
+    const closed = this.operations.close();
     await this.cancelCoreStarts();
-    await this.operations.close();
+    await closed;
     this.supervisor.stop();
     if (getConfig().localModels.managed.engine === "atomic-core") await this.backendPullInFlight;
     if (this.timer) clearInterval(this.timer);
@@ -2084,12 +2087,20 @@ export class LocalModelsOrchestrator {
   async stopDaemon(opts?: { silent?: boolean }): Promise<void> {
     this.stopGeneration++;
     this.chatReadyError = "The model was stopped. Start a model and retry the message.";
-    if (getConfig().localModels.managed.engine === "atomic-core") {
-      this.backendAbort?.abort();
-      await this.backendPullInFlight;
-    }
+    const core = getConfig().localModels.managed.engine === "atomic-core";
+    if (core) this.backendAbort?.abort();
+    // run() aborts the waiting or running start synchronously, so that start
+    // sees its own signal and ends without reporting a failure. Core loads the
+    // queue does not replace (embedding pairing) are cancelled after it.
+    const stopped = this.operations.run(async () => {
+      // A Core install holds the engine lock that the stop below needs.
+      if (core) await this.backendPullInFlight;
+      return this.stopDaemonNow(opts);
+    }, undefined);
+    // Observed here; the caller still receives the rejection below.
+    stopped.catch(() => {});
     await this.cancelCoreStarts();
-    return this.operations.run(() => this.stopDaemonNow(opts), undefined);
+    return stopped;
   }
 
   private async stopDaemonNow(opts?: { silent?: boolean }): Promise<void> {
