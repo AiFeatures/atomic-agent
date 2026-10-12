@@ -1,7 +1,8 @@
 import { withCoreOperation } from "./core-operation.js";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { CORE_SWITCH_BACK_HINT, activeCoreVersion, coreRoot, coreSessionPath, readCoreBackend, readCoreJson, writeCoreJson, type CoreSession, type CoreSessionRecord } from "./core-state.js";
+import { CoreUnavailableError } from "./core-errors.js";
+import { activeCoreVersion, coreRoot, coreSessionPath, readCoreBackend, readCoreJson, writeCoreJson, type CoreSession, type CoreSessionRecord } from "./core-state.js";
 import { connectCore, withCoreClient } from "./core-client.js";
 import { shutdownIdleCoreClient } from "./core-idle.js";
 
@@ -35,7 +36,7 @@ export async function loadCoreSession(dataDir: string, options: {
 }): Promise<CoreSession> {
   return withCoreOperation(dataDir, async () => {
   const backend = readCoreBackend(dataDir);
-  if (!backend) throw new Error(`Atomic Core backend is not installed. Choose Update engine first. ${CORE_SWITCH_BACK_HINT}`);
+  if (!backend) throw new CoreUnavailableError({ stage: "start", reasonCode: "not_installed", detail: "its inference backend is not installed yet" });
   return withCoreClient(dataDir, backend.coreVersion, async client => {
     const path = `/models/${backend.provider}/${encodeURIComponent(options.modelId)}`;
     const before = (await client.snapshot()).sessions.find(s => s.provider === backend.provider && s.model_id === options.modelId);
