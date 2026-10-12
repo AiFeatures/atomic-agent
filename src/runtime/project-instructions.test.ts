@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, w
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { instructionImports, loadProjectInstructions } from "./project-instructions.js";
+import { instructionImports, loadProjectInstructions, runGitInWorkspace } from "./project-instructions.js";
 
 describe("cloud project instructions", () => {
   let base: string;
@@ -132,6 +132,34 @@ describe("cloud project instructions", () => {
     const result = loadProjectInstructions(join(base, "gone"));
     expect(result.instructions).toEqual([]);
     expect(result.diagnostics.join("\n")).toMatch(/unavailable/);
+  });
+
+  it("spends the byte budget on the root CLAUDE.md and its imports before nested rules", () => {
+    put("CLAUDE.md", "ROOT @rules.md"); put("rules.md", "IMPORTED");
+    put("a/AGENTS.md", "x".repeat(30)); put("b/AGENTS.md", "y".repeat(30));
+    const result = loadProjectInstructions(root, undefined, { maxBytes: 40 });
+    expect(result.instructions.map(r => r.body).sort()).toEqual(["IMPORTED", "ROOT @rules.md"]);
+    expect(result.diagnostics.join("\n")).toMatch(/exceed 40 bytes/);
+  });
+
+  it("classifies all imports with a single git check-ignore per load", () => {
+    execFileSync("git", ["init", "-q", root]);
+    put(".gitignore", "secret-notes.md\n"); put("secret-notes.md", "HIDDEN");
+    put("CLAUDE.md", "@a.md @b.md @secret-notes.md"); put("a.md", "@c.md A"); put("b.md", "B"); put("c.md", "C");
+    const calls: string[] = [];
+    const result = loadProjectInstructions(root, undefined, { runGit: (dir, args, input) => { calls.push(args[0]!); return runGitInWorkspace(dir, args, input); } });
+    expect(calls.filter(c => c === "check-ignore")).toHaveLength(1);
+    expect(result.instructions.map(r => r.body).sort()).toEqual(["@a.md @b.md @secret-notes.md", "@c.md A", "B", "C"]);
+    expect(result.diagnostics.join("\n")).toMatch(/ignored or unclassified instruction import: secret-notes\.md/);
+  });
+
+  it("never imports common credential files", () => {
+    const secrets = [".aws/credentials", "credentials.json", "prod.tfvars", ".docker/config.json", "vault.kdbx", ".pypirc", ".git-credentials"];
+    for (const path of secrets) put(path, "SECRET");
+    put("CLAUDE.md", secrets.map(path => `@${path}`).join(" "));
+    const result = loadProjectInstructions(root);
+    expect(result.instructions.map(r => r.body).join("\n")).not.toContain("SECRET");
+    expect(result.diagnostics.join("\n")).toMatch(/sensitive instruction import: .*and 2 more/);
   });
 
   it("reflects edits and removals without a cache", () => {

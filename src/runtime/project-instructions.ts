@@ -7,7 +7,7 @@ export interface ProjectInstruction { path: string; scope: string; body: string;
 export interface GitResult { status: number | null; stdout?: string; stderr?: string; error?: Error }
 export interface ProjectInstructionOptions {
   /** Test seam: runs git in the workspace with a cleaned environment. */
-  runGit?: (root: string, args: string[]) => GitResult;
+  runGit?: (root: string, args: string[], input?: string) => GitResult;
   maxEntries?: number;
   maxFiles?: number;
   maxBytes?: number;
@@ -17,14 +17,18 @@ const excluded = new Set([".git", "node_modules"]);
 // The fallback walk has no .gitignore, so it also skips common dependency/build trees.
 const walkExcluded = new Set([...excluded, ".venv", "venv", "vendor", "dist", "build", "target", ".next", "__pycache__"]);
 // Imports never pull credentials into the prompt, ignored by Git or not.
-const sensitive = /^(\.env(\..*)?|\.npmrc|\.netrc|\.pgpass|id_(rsa|dsa|ecdsa|ed25519)(\..*)?|.*\.(pem|key|p12|pfx))$/i;
+const sensitiveName = /^(\.env(\..*)?|\.npmrc|\.netrc|\.pgpass|\.pypirc|\.git-credentials|credentials\.json|id_(rsa|dsa|ecdsa|ed25519)(\..*)?|.*\.(pem|key|p12|pfx|tfvars|kdbx))$/i;
+function isSensitive(relPath: string): boolean {
+  const parts = relPath.split("/");
+  return sensitiveName.test(parts[parts.length - 1]!) || parts.includes(".aws") || relPath === ".docker/config.json" || relPath.endsWith("/.docker/config.json");
+}
 const maxListed = 5;
 
-function defaultRunGit(root: string, args: string[]): GitResult {
+export function runGitInWorkspace(root: string, args: string[], input?: string): GitResult {
   const env = { ...process.env };
   for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"]) delete env[key];
   return spawnSync("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", ...args],
-    { cwd: root, env, encoding: "utf8", timeout: 5000, maxBuffer: 1024 * 1024, windowsHide: true });
+    { cwd: root, env, encoding: "utf8", timeout: 5000, maxBuffer: 1024 * 1024, windowsHide: true, ...(input !== undefined ? { input } : {}) });
 }
 
 /** Groups repeated diagnostics so prose mentions cannot flood the prompt. */
@@ -54,7 +58,7 @@ export function loadProjectInstructions(workingDir: string, signal?: AbortSignal
   try {
     return { instructions: loadInstructions(workingDir, diagnostics, signal, options), diagnostics: diagnostics.lines() };
   } catch (error) {
-    if (signal?.aborted) throw error;
+    if (signal?.aborted) throw signal.reason ?? error;
     diagnostics.add(`Project instructions unavailable: ${error instanceof Error ? error.message : String(error)}`);
     return { instructions: [], diagnostics: diagnostics.lines() };
   }
@@ -62,7 +66,7 @@ export function loadProjectInstructions(workingDir: string, signal?: AbortSignal
 
 function loadInstructions(workingDir: string, diagnostics: Diagnostics, signal: AbortSignal | undefined, options: ProjectInstructionOptions): ProjectInstruction[] {
   const root = realpathSync(workingDir);
-  const runGit = options.runGit ?? defaultRunGit;
+  const runGit = options.runGit ?? runGitInWorkspace;
   const maxFiles = options.maxFiles ?? 512;
   const maxBytes = options.maxBytes ?? 1024 * 1024;
   const rel = (path: string) => relative(root, path).split("\\").join("/") || ".";
@@ -86,17 +90,55 @@ function loadInstructions(workingDir: string, diagnostics: Diagnostics, signal: 
     diagnostics.add(`Project instructions exceed ${maxFiles} files; deeper files were not loaded. Narrow the workspace.`);
     paths = paths.slice(0, maxFiles);
   }
-  const ignoredCache = new Map<string, boolean>();
-  /** Fail closed: an import Git ignores, or cannot classify, is not read. */
-  function gitIgnores(path: string): boolean {
-    const key = rel(path);
-    let ignored = ignoredCache.get(key);
-    if (ignored === undefined) {
-      const check = runGit(root, ["check-ignore", "-q", "--", key]);
-      ignored = check.status !== 1;
-      ignoredCache.set(key, ignored);
+  const contents = new Map<string, { path: string; content: string }>();
+  /** Reads once per step; the import pre-pass and the real pass share it. */
+  function readOnce(actual: string): { path: string; content: string } | null {
+    const cached = contents.get(actual);
+    if (cached) return cached;
+    const file = readWorkspaceFile(root, actual);
+    if (file) contents.set(actual, file);
+    return file;
+  }
+  const ignoredImports = gitMode ? classifyImports() : null;
+  /**
+   * One `git check-ignore` per step: a pre-pass collects every import that could
+   * be read, then Git classifies them together. Unclassified imports fail closed.
+   */
+  function classifyImports(): { candidates: Set<string>; ignored: Set<string> | "all" } {
+    const candidates = new Set<string>();
+    const visitedDepth = new Map<string, number>();
+    let scanned = 0;
+    const visit = (path: string, depth: number): void => {
+      signal?.throwIfAborted();
+      // Beyond this, imports stay unclassified and are skipped by the real pass.
+      if (depth > 4 || scanned > 8 * maxBytes || !isWithinWorkspace(root, path)) return;
+      let actual: string;
+      try { actual = realpathSync(path); } catch { return; }
+      if (!isWithinWorkspace(root, actual) || (depth > 0 && isSensitive(rel(actual)))) return;
+      if ((visitedDepth.get(actual) ?? Infinity) <= depth) { if (depth > 0 && contents.has(actual)) candidates.add(rel(actual)); return; }
+      visitedDepth.set(actual, depth);
+      let file: { path: string; content: string } | null;
+      try { file = statSync(actual).isFile() ? readOnce(actual) : null; } catch { return; }
+      if (!file || file.content.includes("\0")) return;
+      scanned += file.content.length;
+      if (depth > 0) candidates.add(rel(actual));
+      if (basename(path) !== "CLAUDE.md" && depth === 0) return;
+      for (const target of instructionImports(file.content)) if (!target.startsWith("~")) visit(resolve(dirname(actual), target), depth + 1);
+    };
+    for (const path of paths) visit(resolve(root, path), 0);
+    if (!candidates.size) return { candidates, ignored: new Set() };
+    const check = runGit(root, ["check-ignore", "-z", "--stdin"], [...candidates].join("\0") + "\0");
+    if (check.status === 1) return { candidates, ignored: new Set() };
+    if (check.status !== 0) {
+      diagnostics.add(`Git could not classify instruction imports; skipping them: ${(check.error?.message ?? check.stderr ?? "").trim().split("\n")[0]}`);
+      return { candidates, ignored: "all" };
     }
-    return ignored;
+    return { candidates, ignored: new Set((check.stdout ?? "").split("\0").filter(Boolean)) };
+  }
+  function gitIgnores(path: string): boolean {
+    if (!ignoredImports) return false;
+    const key = rel(path);
+    return ignoredImports.ignored === "all" || !ignoredImports.candidates.has(key) || ignoredImports.ignored.has(key);
   }
   const instructions: ProjectInstruction[] = [];
   const seen = new Set<string>();
@@ -119,12 +161,12 @@ function loadInstructions(workingDir: string, diagnostics: Diagnostics, signal: 
     const key = `${scope}\0${actual}`;
     if (seen.has(key)) return;
     if (depth > 4) { diagnostics.add("Skipped instruction imports beyond four hops", rel(actual)); return; }
-    if (depth > 0 && sensitive.test(basename(actual))) { diagnostics.add("Skipped sensitive instruction import", rel(actual)); return; }
+    if (depth > 0 && isSensitive(rel(actual))) { diagnostics.add("Skipped sensitive instruction import", rel(actual)); return; }
     let file: { path: string; content: string } | null;
     try {
       if (!statSync(actual).isFile()) { diagnostics.add("Skipped non-file instruction", rel(actual)); return; }
-      if (depth > 0 && gitMode && gitIgnores(actual)) { diagnostics.add("Skipped ignored instruction import", rel(actual)); return; }
-      file = readWorkspaceFile(root, actual);
+      if (depth > 0 && gitIgnores(actual)) { diagnostics.add("Skipped ignored or unclassified instruction import", rel(actual)); return; }
+      file = readOnce(actual);
     } catch (error) {
       diagnostics.add("Skipped unreadable instruction", `${rel(actual)} (${(error as NodeJS.ErrnoException).code ?? (error instanceof Error ? error.message.replace(root, ".") : String(error))})`);
       return;
@@ -148,13 +190,16 @@ function loadInstructions(workingDir: string, diagnostics: Diagnostics, signal: 
       }
     }
   }
-  // Higher precedence first also determines the label of a deduplicated import.
-  paths.sort((a, b) => priorityOf(b) - priorityOf(a) || a.localeCompare(b));
-  for (const path of paths) {
+  // Shallow scopes first, so the byte and file budgets keep the most general rules
+  // (and their imports); within a scope, higher precedence first, which also
+  // determines the label of a deduplicated import.
+  const scopeOf = (path: string) => {
     const dir = dirname(path);
-    const scope = basename(path) === "CLAUDE.md" && basename(dir) === ".claude" ? dirname(dir) : dir;
-    read(resolve(root, path), path, scope.split("\\").join("/"), priorityOf(path), 0, new Set());
-  }
+    return (basename(path) === "CLAUDE.md" && basename(dir) === ".claude" ? dirname(dir) : dir).split("\\").join("/");
+  };
+  const depthOf = (scope: string) => scope === "." ? 0 : scope.split("/").length;
+  paths.sort((a, b) => depthOf(scopeOf(a)) - depthOf(scopeOf(b)) || priorityOf(b) - priorityOf(a) || a.localeCompare(b));
+  for (const path of paths) read(resolve(root, path), path, scopeOf(path), priorityOf(path), 0, new Set());
   instructions.sort((a, b) => a.scope.split("/").length - b.scope.split("/").length || a.scope.localeCompare(b.scope) || b.priority - a.priority || a.path.localeCompare(b.path));
   return instructions;
 }
