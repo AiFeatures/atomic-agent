@@ -3,6 +3,7 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CORE_SWITCH_BACK_HINT, activeCoreVersion, coreRoot, coreSessionPath, readCoreBackend, readCoreJson, writeCoreJson, type CoreSession, type CoreSessionRecord } from "./core-state.js";
 import { connectCore, withCoreClient } from "./core-client.js";
+import { shutdownIdleCoreClient } from "./core-idle.js";
 
 /** These host arguments are owned by the control contract, never duplicated in extra_args. */
 export function coreLoadOverrides(args: readonly string[]): Record<string, unknown> {
@@ -153,18 +154,6 @@ export async function stopIdleCore(dataDir: string): Promise<boolean> {
   return withCoreOperation(dataDir, async () => {
     const client = await connectCore(dataDir, activeCoreVersion(dataDir));
     if (!client) return false;
-    const lease = await client.call<{ client: { id: string } }>("/clients", { name: "Atomic Agent", pid: process.pid });
-    const id = lease.client.id;
-    let stopping = false;
-    try {
-      if ((await client.snapshot()).sessions.length > 0) return false;
-      await client.call<{ ok: boolean }>("/shutdown", { client_id: id });
-      stopping = true;
-      return true;
-    } catch {
-      return false;
-    } finally {
-      if (!stopping) await client.call(`/clients/${encodeURIComponent(id)}`, undefined, { method: "DELETE" }).catch(() => {});
-    }
+    return shutdownIdleCoreClient(client);
   });
 }

@@ -4,8 +4,12 @@ import { randomUUID } from "node:crypto";
 import { restrictWindowsAcl } from "../../config/windows-acl.js";
 
 export type ManagedEngine = "llama-server" | "atomic-core";
-/** Exact releases exercised by the host's control-contract tests. */
-export const CORE_VERSIONS = ["0.11.2"] as const;
+/**
+ * Exact releases exercised by the host's control-contract tests. The last
+ * one is what this build installs; older entries stay readable so an
+ * existing install, its sessions and its daemon still stop cleanly.
+ */
+export const CORE_VERSIONS = ["0.11.2", "0.13.6"] as const;
 export const CORE_VERSION = CORE_VERSIONS[CORE_VERSIONS.length - 1]!;
 export const CORE_PROTOCOL = 2;
 export const CORE_REPO = "AtomicBot-ai/atomic-chat-core";

@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { coreDaemonEnv } from "./core-env.js";
-import { CORE_PROTOCOL, withSwitchBackHint, coreBinary, coreDataDir, coreVersionDir, readCoreJson, type CoreSession } from "./core-state.js";
+import { shutdownIdleCoreClient } from "./core-idle.js";
+import { CORE_PROTOCOL, CORE_VERSION, CORE_VERSIONS, withSwitchBackHint, coreBinary, coreDataDir, coreVersionDir, readCoreJson, type CoreSession } from "./core-state.js";
 
 export interface CoreSnapshot {
   instance_id: string;
@@ -113,8 +114,32 @@ export async function connectCore(dataDir: string, version: string): Promise<Cor
 
 /** The CLI-scoped daemon survives one-shot model commands; Core owns its lock and child journal. */
 export async function ensureCore(dataDir: string, version: string, signal?: AbortSignal): Promise<CoreControlClient> {
-  try { return await startCore(dataDir, version, signal); }
+  let client: CoreControlClient;
+  try { client = await startCore(dataDir, version, signal); }
   catch (err) { throw withSwitchBackHint(err, signal); }
+  if (version === CORE_VERSION) await retireOlderCores(dataDir);
+  return client;
+}
+
+const retiredDataDirs = new Set<string>();
+
+/**
+ * Once per process and data folder, after this build's Core is up: ask an
+ * idle daemon of an older pinned version to shut down, so an upgrade does
+ * not leave the previous Core running beside it. Best effort; one that
+ * still serves a model or another client keeps running. Callers hold the
+ * engine operation lock (every ensureCore caller does).
+ */
+export async function retireOlderCores(dataDir: string, connect: typeof connectCore = connectCore): Promise<void> {
+  if (retiredDataDirs.has(dataDir)) return;
+  retiredDataDirs.add(dataDir);
+  for (const version of CORE_VERSIONS) {
+    if (version === CORE_VERSION) continue;
+    try {
+      const client = await connect(dataDir, version);
+      if (client) await shutdownIdleCoreClient(client);
+    } catch { /* best effort: an older Core that will not answer is left alone */ }
+  }
 }
 
 async function startCore(dataDir: string, version: string, signal?: AbortSignal): Promise<CoreControlClient> {
