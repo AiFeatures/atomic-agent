@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CoreControlClient } from "./core-client.js";
@@ -59,6 +59,14 @@ describe("Core host contract", () => {
     const dir = fixture();
     writeCoreJson(coreSessionPath(dir, "chat"), { coreVersion: CORE_VERSION, pid: process.pid });
     await expect(stopCoreSession(dir, "chat")).rejects.toThrow("Reconnect");
+  });
+  it("stops nothing and takes no engine lock when Core owns no session", async () => {
+    const dir = fixture();
+    await expect(stopCoreSession(dir, "chat")).resolves.toBe(false);
+    expect(existsSync(join(dir, "core"))).toBe(false);
+    await withCoreOperation(dir, async () => {
+      await expect(stopCoreSession(dir, "embedding")).resolves.toBe(false);
+    });
   });
   it("rejects a concurrent mutation, then releases ownership after an error", async () => {
     const dir = fixture();
