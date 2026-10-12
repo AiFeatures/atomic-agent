@@ -71,6 +71,17 @@ describe("cloud project instructions", () => {
     expect(result.diagnostics.join("\n")).toMatch(/unreadable instruction: big\.md/);
   });
 
+  it.each([true, false])("never imports secrets such as .env (Git=%s)", git => {
+    if (git) { execFileSync("git", ["init", "-q", root]); put(".gitignore", "local-notes.md\n"); put("local-notes.md", "IGNORED NOTE"); }
+    put(".env", "SECRET=1"); put("deploy.pem", "KEY"); put("CLAUDE.md", "never commit @.env or @deploy.pem; see @local-notes.md");
+    const result = loadProjectInstructions(root);
+    const bodies = result.instructions.map(r => r.body).join("\n");
+    expect(bodies).not.toContain("SECRET=1");
+    expect(result.instructions.some(r => r.body === "KEY")).toBe(false);
+    if (git) expect(bodies).not.toContain("IGNORED NOTE");
+    expect(result.diagnostics.join("\n")).toMatch(/sensitive instruction import: \.env, deploy\.pem/);
+  });
+
   it("falls back to the walk when Git refuses the folder, skipping dependency trees", () => {
     const runGit = () => ({ status: 128, stdout: "", stderr: "fatal: detected dubious ownership in repository at '/x'\n" });
     put("nested/AGENTS.md"); put("dist/AGENTS.md"); put(".venv/lib/CLAUDE.md"); put("vendor/pkg/AGENTS.md");

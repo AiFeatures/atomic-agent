@@ -16,6 +16,8 @@ const names = new Set(["AGENTS.md", "AGENT.md", "CLAUDE.md"]);
 const excluded = new Set([".git", "node_modules"]);
 // The fallback walk has no .gitignore, so it also skips common dependency/build trees.
 const walkExcluded = new Set([...excluded, ".venv", "venv", "vendor", "dist", "build", "target", ".next", "__pycache__"]);
+// Imports never pull credentials into the prompt, ignored by Git or not.
+const sensitive = /^(\.env(\..*)?|\.npmrc|\.netrc|\.pgpass|id_(rsa|dsa|ecdsa|ed25519)(\..*)?|.*\.(pem|key|p12|pfx))$/i;
 const maxListed = 5;
 
 function defaultRunGit(root: string, args: string[]): GitResult {
@@ -84,6 +86,18 @@ function loadInstructions(workingDir: string, diagnostics: Diagnostics, signal: 
     diagnostics.add(`Project instructions exceed ${maxFiles} files; deeper files were not loaded. Narrow the workspace.`);
     paths = paths.slice(0, maxFiles);
   }
+  const ignoredCache = new Map<string, boolean>();
+  /** Fail closed: an import Git ignores, or cannot classify, is not read. */
+  function gitIgnores(path: string): boolean {
+    const key = rel(path);
+    let ignored = ignoredCache.get(key);
+    if (ignored === undefined) {
+      const check = runGit(root, ["check-ignore", "-q", "--", key]);
+      ignored = check.status !== 1;
+      ignoredCache.set(key, ignored);
+    }
+    return ignored;
+  }
   const instructions: ProjectInstruction[] = [];
   const seen = new Set<string>();
   let bytes = 0;
@@ -105,9 +119,11 @@ function loadInstructions(workingDir: string, diagnostics: Diagnostics, signal: 
     const key = `${scope}\0${actual}`;
     if (seen.has(key)) return;
     if (depth > 4) { diagnostics.add("Skipped instruction imports beyond four hops", rel(actual)); return; }
+    if (depth > 0 && sensitive.test(basename(actual))) { diagnostics.add("Skipped sensitive instruction import", rel(actual)); return; }
     let file: { path: string; content: string } | null;
     try {
       if (!statSync(actual).isFile()) { diagnostics.add("Skipped non-file instruction", rel(actual)); return; }
+      if (depth > 0 && gitMode && gitIgnores(actual)) { diagnostics.add("Skipped ignored instruction import", rel(actual)); return; }
       file = readWorkspaceFile(root, actual);
     } catch (error) {
       diagnostics.add("Skipped unreadable instruction", `${rel(actual)} (${(error as NodeJS.ErrnoException).code ?? (error instanceof Error ? error.message.replace(root, ".") : String(error))})`);
