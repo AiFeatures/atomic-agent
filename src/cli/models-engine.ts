@@ -4,6 +4,7 @@ import { selectManagedEngine } from "../local-llm/engine-selection.js";
 import { CORE_VERSION, activeCoreVersion, readCoreBackend } from "../local-llm/core/core-state.js";
 import { checkCoreUpdate } from "../local-llm/core/core-install.js";
 import { isCoreBackendInstalled } from "../local-llm/core/core-backend.js";
+import { atomicCoreChoiceEnabled } from "../local-llm/core/experimental.js";
 
 /** A structured surface for both frontends; contains no model-session credentials. */
 export async function modelsEngineCommand(args: string[]): Promise<number> {
@@ -12,7 +13,7 @@ export async function modelsEngineCommand(args: string[]): Promise<number> {
   const action = args[0] ?? "status";
   if (action === "status" || action === "check") {
     const check = action === "check" ? await checkCoreUpdate(dataDir, fetch, true) : undefined;
-    process.stdout.write(JSON.stringify({ engine: cfg.localModels.managed.engine ?? "llama-server", installed: isCoreBackendInstalled(dataDir), version: activeCoreVersion(dataDir), compatibleVersion: CORE_VERSION, backend: readCoreBackend(dataDir)?.version ?? null, ...(check ? { check } : {}) }) + "\n");
+    process.stdout.write(JSON.stringify({ engine: cfg.localModels.managed.engine ?? "llama-server", choiceEnabled: atomicCoreChoiceEnabled(cfg), installed: isCoreBackendInstalled(dataDir), version: activeCoreVersion(dataDir), compatibleVersion: CORE_VERSION, backend: readCoreBackend(dataDir)?.version ?? null, ...(check ? { check } : {}) }) + "\n");
     return 0;
   }
   if (action !== "atomic-core" && action !== "llama-server") throw new Error("Usage: models engine [status|check|atomic-core|llama-server]");
