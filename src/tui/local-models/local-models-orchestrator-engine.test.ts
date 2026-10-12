@@ -32,11 +32,16 @@ function orchestratorWithSlowStart() {
   const internals = orchestrator as unknown as {
     startDaemonNow: () => Promise<boolean>; stopDaemonNow: () => Promise<void>; refresh: () => Promise<void>;
   };
-  let finishStart!: (ok: boolean) => void;
-  vi.spyOn(internals, "startDaemonNow").mockImplementation(() => new Promise(resolve => { finishStart = resolve; }));
+  // The queue starts the load on a later tick; an outcome given before that is handed over when it does.
+  let resolveStart: ((ok: boolean) => void) | undefined;
+  let earlyOutcome: boolean | undefined;
+  vi.spyOn(internals, "startDaemonNow").mockImplementation(() => new Promise(resolve => {
+    if (earlyOutcome === undefined) resolveStart = resolve; else resolve(earlyOutcome);
+  }));
   vi.spyOn(internals, "stopDaemonNow").mockResolvedValue();
   vi.spyOn(internals, "refresh").mockResolvedValue();
-  return { orchestrator, finishStart: (ok: boolean) => finishStart(ok) };
+  const finishStart = (ok: boolean) => { if (resolveStart) resolveStart(ok); else earlyOutcome = ok; };
+  return { orchestrator, finishStart };
 }
 
 it("saves an engine choice queued behind a loading model once the load ends", async () => {
