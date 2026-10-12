@@ -45,7 +45,12 @@ import {
   isMmprojDownloaded,
   isModelDownloaded,
   buildCustomModelDef,
+  buildLocalGgufModelDef,
+  describeMissingLocalGguf,
   listLocalModels,
+  looksLikeLocalGgufPath,
+  resolveLocalGgufFile,
+  resolveModelsDir,
   listVulkanDevices,
   AUTO_UPDATE_RECHECK_MS,
   checkForBackendUpdateForPanel,
@@ -531,6 +536,22 @@ export class LocalModelsOrchestrator {
       this.bus.emit({
         type: "runtime_info",
         line: `local-llm: ${def.name} is not vision-capable — nothing to pull`,
+      });
+      return;
+    }
+
+    // Added from disk: nothing to download, so a missing file is the
+    // whole story — say where it was expected rather than spawn a worker
+    // that can only fail (or fetch a backend for a model that cannot run).
+    if (
+      mode !== "mmproj-only" &&
+      def.localPath &&
+      !isModelDownloaded(dataDir, def)
+    ) {
+      this.bus.emit({
+        type: "local_models_pull_failed",
+        kind: "chat",
+        error: describeMissingLocalGguf(def.localPath),
       });
       return;
     }
@@ -1266,6 +1287,14 @@ export class LocalModelsOrchestrator {
    * sentence and is shown on the editor that asked for the reference.
    */
   async resolveHuggingFaceReference(raw: string): Promise<void> {
+    if (looksLikeLocalGgufPath(raw)) {
+      // A path supersedes whatever was being looked up before it: drop
+      // that socket so a late answer cannot land over the local add.
+      this.hfLookup?.abort();
+      this.hfLookup = null;
+      await this.addLocalGgufFile(raw);
+      return;
+    }
     const controller = new AbortController();
     this.hfLookup?.abort();
     this.hfLookup = controller;
@@ -1317,6 +1346,35 @@ export class LocalModelsOrchestrator {
       // Written before the pull starts: `pullModel` resolves the id
       // through the catalog registry, and the registry is loaded from
       // the file this call writes.
+      addCustomModel(def);
+      id = def.id;
+    } catch (err) {
+      this.bus.emit({
+        type: "local_models_hf_lookup_failed",
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+    this.bus.emit({ type: "local_models_hf_closed" });
+    await this.pullModel(id);
+  }
+
+  /**
+   * The reference was a path to a GGUF already on disk (issue #631):
+   * validate it, register it where it lies — no copy, no download — and
+   * hand it to the same pull the Hugging Face rows use. That pull finds
+   * the weights present and goes straight to activate-and-start. A bad
+   * path stays on the reference editor with the reason.
+   */
+  private async addLocalGgufFile(raw: string): Promise<void> {
+    let id: LocalModelId;
+    try {
+      const dataDir = getConfig().paths.localModelsDataDir;
+      const def = buildLocalGgufModelDef(
+        resolveLocalGgufFile(raw, {
+          managedModelsDir: resolveModelsDir(dataDir),
+        }),
+      );
       addCustomModel(def);
       id = def.id;
     } catch (err) {
@@ -1448,7 +1506,17 @@ export class LocalModelsOrchestrator {
     this.hooks?.onManagedModelSelected?.(id);
     await this.refresh();
     if (!current()) return;
-    if (!isModelDownloaded(dataDir, getLocalModelDef(id))) {
+    const selectedDef = getLocalModelDef(id);
+    if (!isModelDownloaded(dataDir, selectedDef)) {
+      if (selectedDef.localPath) {
+        // Nothing to download for a file added from disk; the honest
+        // message is where it was expected.
+        this.bus.emit({
+          type: "runtime_info",
+          line: `local-llm: ${selectedDef.name}: ${describeMissingLocalGguf(selectedDef.localPath)}`,
+        });
+        return;
+      }
       this.bus.emit({
         type: "runtime_info",
         line: `local-llm: model ${id} not downloaded — downloading now…`,
@@ -1515,11 +1583,15 @@ export class LocalModelsOrchestrator {
       // A curated row survives its files' deletion — the catalog is the
       // product. A custom row exists only because the operator added it,
       // so deleting the model undoes the add too; otherwise the row
-      // would linger with no other way to drop it from the list.
+      // would linger with no other way to drop it from the list. A row
+      // added from disk only loses its entry: `removeModel` leaves the
+      // operator's own file alone.
       if (def.family === "custom") removeCustomModel(id);
       this.bus.emit({
         type: "runtime_info",
-        line: `local-llm: ${def.name} removed`,
+        line: def.localPath
+          ? `local-llm: ${def.name} removed from the list (file kept at ${def.localPath})`
+          : `local-llm: ${def.name} removed`,
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -1706,6 +1778,13 @@ export class LocalModelsOrchestrator {
       await this.pullBackend();
       if (!isBackendDownloaded(dataDir)) return false;
       justPulledBackend = true;
+    }
+    if (!isModelDownloaded(dataDir, def) && def.localPath) {
+      this.bus.emit({
+        type: "runtime_info",
+        line: `local-llm: ${def.name} cannot start — ${describeMissingLocalGguf(def.localPath)}`,
+      });
+      return false;
     }
     if (!isModelDownloaded(dataDir, def)) {
       // With a pull already in flight the honest message is the live
