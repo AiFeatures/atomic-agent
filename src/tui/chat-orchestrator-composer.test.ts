@@ -61,3 +61,32 @@ it("a queued message drained during a route change stays queued and resumes afte
   finish(true); await changing;
   expect(resume).toHaveBeenCalledTimes(1);
 });
+
+it("a model start resuming the queue mid route change leaves the backlog for the change's end", async () => {
+  let finish!: (ok: boolean) => void;
+  const f = fixture(() => new Promise(resolve => { finish = resolve; }));
+  const app = f.app as unknown as {
+    queue: string[]; quitting: boolean; session: { id: string };
+    localModels: { waitForSwitch: (signal: AbortSignal) => Promise<void> };
+    resumeModelQueue(): Promise<void>; runOneTurn(text: string, fromQueue?: boolean): Promise<void>;
+  };
+  Object.assign(app, { quitting: false, session: { id: "s1" } });
+  app.localModels.waitForSwitch = async () => {};
+  app.queue.push("first", "second");
+  const original = app.runOneTurn.bind(app);
+  const ran: string[] = [];
+  // Only a turn that gets past the route-change guard is recorded instead of run.
+  vi.spyOn(app, "runOneTurn").mockImplementation(async (text, fromQueue) => {
+    if ((app as unknown as { composerRoutePending: boolean }).composerRoutePending) return original(text, fromQueue);
+    ran.push(text);
+  });
+  const changing = f.app.chooseComposerEngine("atomic-core", "worker");
+  // What onManagedDaemonRestarted does when the change starts a model.
+  await app.resumeModelQueue();
+  expect(app.queue).toEqual(["first", "second"]);
+  expect(ran).toEqual([]);
+  expect(f.emit).not.toHaveBeenCalledWith({ type: "input_changed", value: "first" });
+  finish(true); await changing;
+  await vi.waitFor(() => expect(ran).toEqual(["first"]));
+  expect(app.queue).toEqual(["second"]);
+});
