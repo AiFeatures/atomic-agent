@@ -11,7 +11,7 @@ Sources: [daemon lifecycle](../server/daemon-lifecycle.ts), [launch guard](../se
 
 ## Atomic Core engine
 
-The TUI offers Atomic Chat as an engine only with `ATOMIC_AGENT_EXPERIMENTAL_ATOMIC_CORE=1` or when the config already selects `atomic-core` (`atomicCoreChoiceEnabled` in [experimental.ts](../core/experimental.ts)), until Windows and Linux are validated; `models engine` always works and its `status` JSON reports `choiceEnabled`.
+The TUI and `models engine atomic-core` select Atomic Chat as an engine only with `ATOMIC_AGENT_EXPERIMENTAL_ATOMIC_CORE=1` or when the config already selects `atomic-core` (`atomicCoreChoiceEnabled` in [experimental.ts](../core/experimental.ts)), until Windows and Linux are validated. `models engine llama-server` and `models engine status` always work; the `status` JSON reports `choiceEnabled`.
 
 `localModels.managed.engine` selects `llama-server` (the compatible default for existing configurations) or `atomic-core`. Choose it with `atomic-agent models engine atomic-core` or `/model engine atomic-core` in the TUI, with local models stopped. The same downloaded GGUFs, native completion/grammar protocol, context sizing and optional embedding model remain available. `models engine llama-server` switches back without deleting model weights.
 
