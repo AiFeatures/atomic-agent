@@ -1,7 +1,7 @@
 import { withCoreOperation } from "./core-operation.js";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { coreSessionPath, readCoreBackend, readCoreJson, writeCoreJson, type CoreSession, type CoreSessionRecord } from "./core-state.js";
+import { coreRoot, coreSessionPath, readCoreBackend, readCoreJson, writeCoreJson, type CoreSession, type CoreSessionRecord } from "./core-state.js";
 import { connectCore, withCoreClient } from "./core-client.js";
 
 /** These host arguments are owned by the control contract, never duplicated in extra_args. */
@@ -82,10 +82,14 @@ export async function loadCoreSession(dataDir: string, options: {
 
 /** Return true even for a stale record: falling through to kill(pid) would bypass Core ownership. */
 export async function stopCoreSession(dataDir: string, role: "chat" | "embedding"): Promise<boolean> {
-  // Every llama-server stop asks here first. Without a record there is nothing
-  // Core owns, so skip the cross-process lock: a stale or busy engine lock must
-  // never block stopping a standalone llama-server.
-  if (!existsSync(coreSessionPath(dataDir, role))) return false;
+  // Every llama-server stop asks here first. A user who never ran Core has no
+  // core folder, and must not contend for its lock. Otherwise skip the lock only
+  // when there is no record and no engine operation: a Core load in another
+  // process writes its record at the end, so Stop must wait on its lock.
+  const root = coreRoot(dataDir);
+  if (!existsSync(root)) return false;
+  if (!existsSync(coreSessionPath(dataDir, role)) &&
+      !existsSync(join(root, "operation.lock")) && !existsSync(join(root, "operation-gate.lock"))) return false;
   return withCoreOperation(dataDir, async () => {
   const path = coreSessionPath(dataDir, role);
   const record = readCoreJson<CoreSessionRecord>(path);

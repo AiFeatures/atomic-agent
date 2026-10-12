@@ -64,9 +64,13 @@ describe("Core host contract", () => {
     const dir = fixture();
     await expect(stopCoreSession(dir, "chat")).resolves.toBe(false);
     expect(existsSync(join(dir, "core"))).toBe(false);
+  });
+  it("waits on a Core operation in progress instead of reporting a stop that did nothing", async () => {
+    const dir = fixture();
     await withCoreOperation(dir, async () => {
-      await expect(stopCoreSession(dir, "embedding")).resolves.toBe(false);
+      await expect(stopCoreSession(dir, "chat")).rejects.toThrow("Another engine operation");
     });
+    await expect(stopCoreSession(dir, "chat")).resolves.toBe(false);
   });
   it("rejects a concurrent mutation, then releases ownership after an error", async () => {
     const dir = fixture();
