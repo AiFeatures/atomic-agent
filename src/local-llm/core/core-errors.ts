@@ -19,11 +19,16 @@ export type CoreFailureReason =
   | "network" | "server" | "disk" | "checksum" | "version" | "unsupported"
   | "no_backend" | "not_installed" | "not_ready" | "spawn" | "unknown";
 
-/** The structured part of a failure, for UIs that render buttons and for analytics. */
+/**
+ * The structured part of a failure, for UIs that render buttons and for
+ * analytics. `reason` is display text; analytics sends only `stage` and
+ * `reasonCode`.
+ */
 export interface CoreFailureInfo {
   stage: CoreFailureStage;
   reasonCode: CoreFailureReason;
   retryable: boolean;
+  reason: string;
 }
 
 const STAGE_TEXT: Record<CoreFailureStage, string> = {
@@ -58,7 +63,7 @@ export class CoreUnavailableError extends Error {
   }
 
   get info(): CoreFailureInfo {
-    return { stage: this.stage, reasonCode: this.reasonCode, retryable: this.retryable };
+    return { stage: this.stage, reasonCode: this.reasonCode, retryable: this.retryable, reason: this.reason };
   }
 }
 

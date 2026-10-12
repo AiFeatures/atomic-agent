@@ -41,11 +41,11 @@ it("wraps once, keeps the first stage and leaves cancellation alone", () => {
 
 it("classifies failures into fixed words with a retry decision", () => {
   const network = toCoreUnavailable(new TypeError("fetch failed"), "download") as CoreUnavailableError;
-  expect(network.info).toEqual({ stage: "download", reasonCode: "network", retryable: true });
+  expect(network.info).toMatchObject({ stage: "download", reasonCode: "network", retryable: true, reason: "The Atomic Chat engine could not be downloaded: fetch failed." });
   const server = toCoreUnavailable(Object.assign(new Error("bad gateway"), { status: 502 }), "backend") as CoreUnavailableError;
-  expect(server.info).toEqual({ stage: "backend", reasonCode: "server", retryable: true });
+  expect(server.info).toMatchObject({ stage: "backend", reasonCode: "server", retryable: true });
   const disk = toCoreUnavailable(Object.assign(new Error("no space"), { code: "ENOSPC" }), "download") as CoreUnavailableError;
-  expect(disk.info).toEqual({ stage: "download", reasonCode: "disk", retryable: false });
+  expect(disk.info).toMatchObject({ stage: "download", reasonCode: "disk", retryable: false });
   expect(new CoreUnavailableError({ stage: "backend", reasonCode: "no_backend" }).retryable).toBe(false);
   expect(new CoreUnavailableError({ stage: "verify", reasonCode: "checksum" }).retryable).toBe(true);
 });
