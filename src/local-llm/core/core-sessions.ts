@@ -1,7 +1,7 @@
 import { withCoreOperation } from "./core-operation.js";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { coreRoot, coreSessionPath, readCoreBackend, readCoreJson, writeCoreJson, type CoreSession, type CoreSessionRecord } from "./core-state.js";
+import { CORE_SWITCH_BACK_HINT, coreRoot, coreSessionPath, readCoreBackend, readCoreJson, writeCoreJson, type CoreSession, type CoreSessionRecord } from "./core-state.js";
 import { connectCore, withCoreClient } from "./core-client.js";
 
 /** These host arguments are owned by the control contract, never duplicated in extra_args. */
@@ -34,7 +34,7 @@ export async function loadCoreSession(dataDir: string, options: {
 }): Promise<CoreSession> {
   return withCoreOperation(dataDir, async () => {
   const backend = readCoreBackend(dataDir);
-  if (!backend) throw new Error("Atomic Core backend is not installed. Choose Update engine first.");
+  if (!backend) throw new Error(`Atomic Core backend is not installed. Choose Update engine first. ${CORE_SWITCH_BACK_HINT}`);
   return withCoreClient(dataDir, backend.coreVersion, async client => {
     const path = `/models/${backend.provider}/${encodeURIComponent(options.modelId)}`;
     const before = (await client.snapshot()).sessions.find(s => s.provider === backend.provider && s.model_id === options.modelId);

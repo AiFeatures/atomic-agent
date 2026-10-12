@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { coreDaemonEnv } from "./core-env.js";
-import { CORE_PROTOCOL, coreBinary, coreDataDir, coreVersionDir, readCoreJson, type CoreSession } from "./core-state.js";
+import { CORE_PROTOCOL, withSwitchBackHint, coreBinary, coreDataDir, coreVersionDir, readCoreJson, type CoreSession } from "./core-state.js";
 
 export interface CoreSnapshot {
   instance_id: string;
@@ -107,6 +107,11 @@ export async function connectCore(dataDir: string, version: string): Promise<Cor
 
 /** The CLI-scoped daemon survives one-shot model commands; Core owns its lock and child journal. */
 export async function ensureCore(dataDir: string, version: string, signal?: AbortSignal): Promise<CoreControlClient> {
+  try { return await startCore(dataDir, version, signal); }
+  catch (err) { throw withSwitchBackHint(err, signal); }
+}
+
+async function startCore(dataDir: string, version: string, signal?: AbortSignal): Promise<CoreControlClient> {
   const existing = await connectCore(dataDir, version);
   if (existing) return existing;
   const binary = coreBinary(dataDir, version);
