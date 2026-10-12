@@ -440,7 +440,10 @@ export async function runLocalModelsStatus(): Promise<number> {
   return 0;
 }
 
-export async function runLocalModelsStart(signal?: AbortSignal): Promise<number> {
+export async function runLocalModelsStart(
+  opts: { interactive?: boolean; signal?: AbortSignal } = {},
+): Promise<number> {
+  const { signal } = opts;
   const cfg = getConfig();
   if (cfg.localModels.mode !== "managed") {
     process.stderr.write("external mode — nothing to start\n");
@@ -585,6 +588,7 @@ export async function runLocalModelsStart(signal?: AbortSignal): Promise<number>
       chat: {
         engine: cfg.localModels.managed.engine,
         signal,
+        ...(opts.interactive ? { throughputProbe: false, healthTimeoutMs: 120_000 } : {}),
         dataDir,
         modelId: mid,
         port: cfg.localModels.managed.port,
