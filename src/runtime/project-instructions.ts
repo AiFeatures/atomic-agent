@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { readdirSync, realpathSync } from "node:fs";
+import { readdirSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { readWorkspaceFile, isWithinWorkspace } from "../skills/workspace-files.js";
 
@@ -26,17 +26,23 @@ export function loadProjectInstructions(workingDir: string, signal?: AbortSignal
   const instructions: ProjectInstruction[] = [];
   const seen = new Set<string>();
   let bytes = 0;
-  function read(path: string, scope: string, priority: number, depth: number, stack: Set<string>, required = false): void {
+  function read(path: string, scope: string, priority: number, depth: number, stack: Set<string>): void {
     signal?.throwIfAborted();
     if (!isWithinWorkspace(root, path)) { diagnostics.push(`Skipped external instruction: ${path}`); return; }
     let actual: string;
     try { actual = realpathSync(path); }
-    catch (error) { if (!required && (error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      // `@name` in prose is often a mention or a package scope, not an import.
+      if (depth > 0) diagnostics.push(`Skipped missing instruction import: ${path}`);
+      return;
+    }
     if (!isWithinWorkspace(root, actual)) { diagnostics.push(`Skipped external instruction: ${path}`); return; }
     if (stack.has(actual)) { diagnostics.push(`Instruction import cycle: ${path}`); return; }
     const key = `${scope}\0${actual}`;
     if (seen.has(key)) return;
     if (depth > 4) throw new Error(`Instruction imports exceed four hops: ${path}`);
+    if (depth > 0 && !statSync(actual).isFile()) { diagnostics.push(`Skipped non-file instruction import: ${path}`); return; }
     const file = readWorkspaceFile(root, actual);
     if (!file) throw new Error(`Instruction disappeared while loading: ${path}`);
     bytes += Buffer.byteLength(file.content);
@@ -47,7 +53,7 @@ export function loadProjectInstructions(workingDir: string, signal?: AbortSignal
       const nextStack = new Set(stack).add(actual);
       for (const target of instructionImports(file.content)) {
         if (target.startsWith("~")) { diagnostics.push(`Skipped home instruction import: ${target}`); continue; }
-        read(resolve(dirname(actual), target), scope, priority, depth + 1, nextStack, true);
+        read(resolve(dirname(actual), target), scope, priority, depth + 1, nextStack);
       }
     }
   }

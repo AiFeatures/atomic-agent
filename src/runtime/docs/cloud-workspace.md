@@ -15,7 +15,7 @@ Cloud Fusion parents pass their working directory into ephemeral session creatio
 
 Git discovery includes tracked and nonignored files; root names are checked directly, even if ignored. Outside Git, traversal excludes `.git` and `node_modules` and stops at 100,000 directory entries. Symlink files escaping the workspace are skipped with diagnostics; fallback traversal does not descend symlink directories. Git discovery has a five-second timeout and a 1 MiB result bound. Read errors on found instructions stop preparation, as do more than 512 instruction blocks or 1 MiB of instruction content. Missing optional instruction files are normal. Content is never silently clipped.
 
-CLAUDE files expand `@path` imports relative to the importing file, including nested imports up to four hops. Imported blocks inherit the importing scope and priority. Cycles produce diagnostics; repeated paths in the same scope are loaded once. Fenced and inline code are ignored. External and home imports are skipped with diagnostics; a missing internal import is an error.
+CLAUDE files expand `@path` imports relative to the importing file, including nested imports up to four hops. Imported blocks inherit the importing scope and priority. Cycles produce diagnostics; repeated paths in the same scope are loaded once. Fenced and inline code are ignored. External, home, missing and non-file imports are skipped with diagnostics, because `@name` in prose is often a mention or a package scope rather than an import.
 
 Updates and removals enter the existing cloud context journal. Unchanged bodies are not repeated, and mutable rules never enter the stable prefix. Compaction carries only active state; old messages remain historical evidence.
 

@@ -48,8 +48,15 @@ describe("cloud project instructions", () => {
     expect(instructionImports("@real.md `@no.md` ``@also-no.md``\n~~~md\n@no.md\n~~~\n(@last.md)")).toEqual(["real.md", "last.md"]);
   });
 
-  it("fails explicitly on missing internal imports, depth, special files and size", () => {
-    put("CLAUDE.md", "@missing.md"); expect(() => loadProjectInstructions(root)).toThrow();
+  it("skips missing and directory imports with diagnostics instead of failing", () => {
+    put("CLAUDE.md", "Ask @nadya, install @types/node, see @src for code.\nBODY"); mkdirSync(join(root, "src"));
+    const result = loadProjectInstructions(root);
+    expect(result.instructions.map(r => r.body)).toEqual(["Ask @nadya, install @types/node, see @src for code.\nBODY"]);
+    expect(result.diagnostics.filter(d => /missing instruction import/.test(d))).toHaveLength(2);
+    expect(result.diagnostics.join("\n")).toMatch(/non-file instruction import/);
+  });
+
+  it("fails explicitly on depth, special files and size", () => {
     for (let i = 0; i < 5; i++) put(`rules/${i}.md`, `@${i + 1}.md`);
     put("rules/5.md", "last"); put("CLAUDE.md", "@rules/0.md");
     expect(() => loadProjectInstructions(root)).toThrow(/four hops/);
