@@ -626,7 +626,7 @@ function dispatchModelsSub(
   }
   if (bits[0] === "engine") {
     if (bits[1] !== "atomic-core" && bits[1] !== "llama-server") {
-      return pureActions([], { systemMessage: "usage: /model engine atomic-core | /model engine llama-server (stop models first)" });
+      return pureActions([], { systemMessage: "usage: /model engine <engine> (stop models first)" });
     }
     return { ...pureActions([]), localModelsEngine: bits[1] };
   }

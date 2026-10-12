@@ -133,6 +133,8 @@ export interface EmbeddingDaemonInfo {
 
 export interface LocalModelsBackendInfo {
   engine?: "atomic-core" | "llama-server";
+  /** Atomic Chat is offered as an engine (`atomicCoreChoiceEnabled`); absent means hidden. */
+  atomicCoreChoice?: boolean;
   currentTag: string | null;
   latestTag: string | null;
   updateAvailable: boolean | null;

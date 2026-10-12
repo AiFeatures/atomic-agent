@@ -27,11 +27,15 @@ export const COMPOSER_SWITCH_KINDS: readonly ComposerSwitchKind[] = [
  */
 export function composerSwitchKindsFor(
   backend: ComposerBackendKind,
+  engineChoice = false,
 ): readonly ComposerSwitchKind[] {
   // Fusion's provider and model controls address the orchestrator leg;
   // its fourth control, `workers`, is the local half — the worker model
   // and how many run at once. Nowhere else draws it.
   if (backend === "fusion") return [...COMPOSER_SWITCH_KINDS, "workerProvider", "workers"];
+  // The local engine control exists only while Atomic Chat is offered;
+  // otherwise llama.cpp is the one engine and there is nothing to switch.
+  if (backend === "local" && !engineChoice) return ["backend", "model"];
   return COMPOSER_SWITCH_KINDS;
 }
 

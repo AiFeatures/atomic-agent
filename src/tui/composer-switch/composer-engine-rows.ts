@@ -13,7 +13,10 @@ export function engineRows(state: TuiState, leg?: "orchestrator" | "worker"): re
     id: `engine:${leg}:${p.id}`, label: p.id, detail: p.hasApiKey ? "Cloud provider" : "No API key",
     active: selected === p.id, intent: { kind: "fusionLeg", leg, providerId: p.id },
   })) : [];
-  const local: ComposerSwitchRow[] = leg && other === "local-llama" ? [] : (["llama-server", "atomic-core"] as const).map(engine => ({
+  const engines: readonly ("llama-server" | "atomic-core")[] = state.localModelsPanel.backend.atomicCoreChoice === true
+    ? (["llama-server", "atomic-core"] as const)
+    : (["llama-server"] as const);
+  const local: ComposerSwitchRow[] = leg && other === "local-llama" ? [] : engines.map(engine => ({
     id: `engine:${leg ?? "local"}:${engine}`, label: engine === "atomic-core" ? "Atomic Chat" : "Local llama",
     detail: engine === "atomic-core" ? "Atomic Chat Core on this machine" : "llama.cpp on this machine",
     active: (!leg || selected === "local-llama") && (state.localModelsPanel.backend.engine ?? "llama-server") === engine,

@@ -243,7 +243,10 @@ export function selectPromptLlmMeta(state: TuiState): PromptLlmMeta {
     // while the daemon restarts) rather than a GGUF file name.
     return {
       model: state.localModelsPanel.activeModelId ?? state.llmHealth.model,
-      provider: (state.localModelsPanel.backend.engine === "atomic-core" ? "Atomic Chat" : "Local llama"),
+      // The engine control is drawn only while Atomic Chat is offered.
+      provider: state.localModelsPanel.backend.atomicCoreChoice === true
+        ? (state.localModelsPanel.backend.engine === "atomic-core" ? "Atomic Chat" : "Local llama")
+        : null,
     };
   }
   return {

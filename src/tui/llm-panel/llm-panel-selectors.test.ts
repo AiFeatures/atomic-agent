@@ -269,8 +269,23 @@ describe("llm-panel selectors", () => {
     // backend word `local` already names the runtime.
     expect(selectPromptLlmMeta(state)).toEqual({
       model: "qwen-3.5-4b",
-      provider: "Local llama",
+      provider: null,
     });
+  });
+
+  it("names the local engine as a control only while Atomic Chat is offered", () => {
+    const base = createInitialTuiState(fakeSession());
+    const panel = {
+      ...base.localModelsPanel,
+      configMode: "managed" as const,
+      activeModelId: "qwen-3.5-4b" as LocalModelDef["id"],
+    };
+    const offered = (engine: "llama-server" | "atomic-core"): TuiState => ({
+      ...base,
+      localModelsPanel: { ...panel, backend: { ...panel.backend, engine, atomicCoreChoice: true } },
+    });
+    expect(selectPromptLlmMeta(offered("llama-server")).provider).toBe("Local llama");
+    expect(selectPromptLlmMeta(offered("atomic-core")).provider).toBe("Atomic Chat");
   });
 
   it("falls back to the probe's label while no catalog id is chosen", () => {
@@ -286,7 +301,7 @@ describe("llm-panel selectors", () => {
     };
     expect(selectPromptLlmMeta(state)).toEqual({
       model: "something-served.gguf",
-      provider: "Local llama",
+      provider: null,
     });
   });
 
