@@ -18,8 +18,13 @@ export function loadProjectInstructions(workingDir: string, signal?: AbortSignal
     { cwd: root, env: gitEnv, encoding: "utf8", timeout: 5000, maxBuffer: 1024 * 1024, windowsHide: true });
   let paths: string[];
   if (git.status === 0) paths = git.stdout.split("\0").filter(Boolean);
-  else if ((git.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT" || /not a git repository/i.test(git.stderr ?? "")) paths = walk(root, signal);
-  else throw new Error(`Project instruction discovery failed: ${git.error?.message ?? git.stderr}`);
+  else {
+    // Not a repository, no git binary, or git refusing the folder (for example
+    // safe.directory ownership checks): the bounded filesystem walk still works.
+    const missing = (git.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT" || /not a git repository/i.test(git.stderr ?? "");
+    if (!missing) diagnostics.push(`Git instruction discovery failed, scanning files instead: ${(git.error?.message ?? git.stderr ?? "").trim()}`);
+    paths = walk(root, diagnostics, signal);
+  }
   paths.push("AGENTS.md", "AGENT.md", "CLAUDE.md", ".claude/CLAUDE.md");
   paths = [...new Set(paths)].filter(p => !p.split(/[\\/]/).some(part => excluded.has(part))).sort();
   if (paths.length > 512) throw new Error("Project instructions exceed 512 files; narrow the workspace.");
@@ -72,15 +77,21 @@ function priorityOf(path: string): number {
   return basename(path) === "AGENTS.md" ? 4 : basename(path) === "AGENT.md" ? 3 : basename(dirname(path)) === ".claude" ? 1 : 2;
 }
 
-function walk(root: string, signal?: AbortSignal): string[] {
+function walk(root: string, diagnostics: string[], signal?: AbortSignal): string[] {
   const paths: string[] = [];
   const pending = [root];
   let count = 0;
   while (pending.length) {
     signal?.throwIfAborted();
     const dir = pending.pop()!;
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (++count > 100_000) throw new Error("Project instruction scan exceeds 100000 entries; narrow the workspace.");
+    let entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); }
+    catch (error) { diagnostics.push(`Skipped unreadable directory: ${relative(root, dir) || "."} (${(error as NodeJS.ErrnoException).code ?? String(error)})`); continue; }
+    for (const entry of entries) {
+      if (++count > 100_000) {
+        diagnostics.push("Project instruction scan stopped at 100000 entries; nested instructions beyond that point were not loaded. Narrow the workspace or use Git.");
+        return paths;
+      }
       if (excluded.has(entry.name)) continue;
       const path = join(dir, entry.name);
       if (entry.isDirectory()) pending.push(path);

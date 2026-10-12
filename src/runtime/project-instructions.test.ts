@@ -56,6 +56,14 @@ describe("cloud project instructions", () => {
     expect(result.diagnostics.join("\n")).toMatch(/non-file instruction import/);
   });
 
+  it("falls back to a bounded walk when Git cannot read the folder", () => {
+    execFileSync("git", ["init", "-q", root]);
+    writeFileSync(join(root, ".git", "HEAD"), "not a ref");
+    put("nested/AGENTS.md");
+    const result = loadProjectInstructions(root);
+    expect(result.instructions.map(r => r.body)).toEqual(["nested/AGENTS.md"]);
+  });
+
   it("fails explicitly on depth, special files and size", () => {
     for (let i = 0; i < 5; i++) put(`rules/${i}.md`, `@${i + 1}.md`);
     put("rules/5.md", "last"); put("CLAUDE.md", "@rules/0.md");
