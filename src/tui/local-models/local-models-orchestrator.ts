@@ -1,5 +1,4 @@
 import { selectManagedEngine } from "../../local-llm/engine-selection.js";
-import { atomicCoreChoiceEnabled, ATOMIC_CORE_EXPERIMENTAL_ENV } from "../../local-llm/core/experimental.js";
 import { stopIdleCore } from "../../local-llm/core/core-sessions.js";
 import { ModelOperationQueue } from "./model-operation-queue.js";
 import { totalmem } from "node:os";
@@ -504,8 +503,9 @@ export class LocalModelsOrchestrator {
         type: "local_models_snapshot_loaded",
         rows,
         backend: {
-          engine: cfg.localModels.managed.engine ?? "llama-server",
-          atomicCoreChoice: atomicCoreChoiceEnabled(cfg),
+          engine: cfg.localModels.managed.engine ?? "atomic-core",
+          // Atomic Chat is the default engine and llama.cpp the way back: both are always offered.
+          atomicCoreChoice: true,
           currentTag: ver?.tag ?? null,
           latestTag,
           updateAvailable,
@@ -1678,13 +1678,7 @@ export class LocalModelsOrchestrator {
   private async chooseEngineNow(engine: "atomic-core" | "llama-server", wanted: () => boolean): Promise<boolean> {
     if (!wanted()) return false;
     const cfg = getConfig();
-    if (engine === "atomic-core" && !atomicCoreChoiceEnabled(cfg)) {
-      const text = `Atomic Chat is experimental. Set ${ATOMIC_CORE_EXPERIMENTAL_ENV}=1 to offer it.`;
-      this.bus.emit({ type: "runtime_info", line: text });
-      this.bus.emit({ type: "composer_notice", text });
-      return false;
-    }
-    if ((cfg.localModels.managed.engine ?? "llama-server") === engine) {
+    if ((cfg.localModels.managed.engine ?? "atomic-core") === engine) {
       this.bus.emit({ type: "composer_notice", text: `${engine === "atomic-core" ? "Atomic Chat" : "Local llama"} is already selected.` });
       return true;
     }
