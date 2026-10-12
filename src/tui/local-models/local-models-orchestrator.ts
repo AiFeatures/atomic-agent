@@ -2444,6 +2444,7 @@ export class LocalModelsOrchestrator {
       });
     }
 
+    const wanted = this.captureStopGuard();
     try {
       const { pid } = await this.trackCoreStart(this.operations.signal, signal =>
         startEmbeddingDaemon({ ...desired, signal, engine: cfg.localModels.managed.engine }));
@@ -2454,6 +2455,8 @@ export class LocalModelsOrchestrator {
         line: `local-llm: embedding daemon up (${desired.modelId}, pid ${pid}) — hybrid recall on`,
       });
     } catch (e) {
+      // Cancelled by Stop, shutdown or a newer choice: nothing failed.
+      if (this.operations.signal?.aborted || !wanted()) return;
       const msg = e instanceof Error ? e.message : String(e);
       // Not persisted: `autoStartIfReady` reaches this at TUI launch
       // with no user action, and a transient start failure must not
