@@ -554,7 +554,7 @@ export class ChatOrchestrator {
       this.bus.emit({ type: "composer_switch_opened", kind: leg === "worker" ? "workers" : "model" });
     } catch (err) {
       this.bus.emit({ type: "composer_notice", text: err instanceof Error ? err.message : String(err) });
-    } finally { this.composerRoutePending = false; }
+    } finally { this.composerRoutePending = false; void this.resumeModelQueue(); }
   }
 
   async chooseComposerFusionModel(leg: "orchestrator" | "worker", modelId: string): Promise<void> {
@@ -581,7 +581,7 @@ export class ChatOrchestrator {
       }});
     } catch (err) {
       this.bus.emit({ type: "composer_notice", text: err instanceof Error ? err.message : String(err) });
-    } finally { this.composerRoutePending = false; }
+    } finally { this.composerRoutePending = false; void this.resumeModelQueue(); }
   }
 
   runUpdate(): void {
@@ -1460,6 +1460,13 @@ export class ChatOrchestrator {
   private readonly waitingModelMessages = new Map<string, string>();
 
   private async runOneTurn(text: string, fromQueue = false): Promise<void> {
+    // A queued message drained mid route change (a model start resumes the
+    // queue) goes back to the head of the queue; the editor may hold a draft.
+    if (fromQueue && this.composerRoutePending) {
+      this.queue.unshift(text);
+      this.emitQueue();
+      return;
+    }
     if (this.holdComposerSubmission(text)) return;
     if (!this.session) return;
     this.announceHeapPressure();

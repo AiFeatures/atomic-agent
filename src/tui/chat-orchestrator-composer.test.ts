@@ -44,3 +44,20 @@ it("Stop during an engine change prevents late Fusion activation", async () => {
   expect(f.setMode).not.toHaveBeenCalled();
   expect(f.emit).not.toHaveBeenCalledWith({type: "composer_switch_opened", kind: "workers"});
 });
+
+it("a queued message drained during a route change stays queued and resumes afterwards", async () => {
+  let finish!: (ok: boolean) => void;
+  const f = fixture(() => new Promise(resolve => { finish = resolve; }));
+  const resume = vi.fn(async () => {});
+  const state = f.app as unknown as { queue: string[]; resumeModelQueue: () => Promise<void>; runOneTurn(text: string, fromQueue: boolean): Promise<void> };
+  state.queue.push("second");
+  state.resumeModelQueue = resume;
+  const changing = f.app.chooseComposerEngine("atomic-core", "worker");
+  await state.runOneTurn("first", true);
+  expect(state.queue).toEqual(["first", "second"]);
+  expect(f.emit).toHaveBeenCalledWith({ type: "queue_changed", queued: ["first", "second"] });
+  expect(f.emit).not.toHaveBeenCalledWith({ type: "input_changed", value: "first" });
+  expect(resume).not.toHaveBeenCalled();
+  finish(true); await changing;
+  expect(resume).toHaveBeenCalledTimes(1);
+});
