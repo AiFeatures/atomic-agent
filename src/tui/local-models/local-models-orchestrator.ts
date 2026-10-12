@@ -1587,10 +1587,8 @@ export class LocalModelsOrchestrator {
    * presses `s` to apply.
    */
   /**
-   * Flip `localModels.managed.autoUpdate`. The flag is on by default and
-   * governs a background download, so it needs a way out that is not
-   * "hand-edit config.json" — the CLI equivalent takes the whole file.
-   * Takes effect on the next start; nothing in flight is cancelled.
+   * Choose the managed engine. Refused while a local model runs; never
+   * stops a model or starts a download (`selectManagedEngine`).
    */
   async chooseEngine(engine: "atomic-core" | "llama-server"): Promise<boolean> {
     // Through the queue so the choice supersedes a waiting start instead of
@@ -1619,6 +1617,12 @@ export class LocalModelsOrchestrator {
     }
   }
 
+  /**
+   * Flip `localModels.managed.autoUpdate`. The flag is on by default and
+   * governs a background download, so it needs a way out that is not
+   * "hand-edit config.json" — the CLI equivalent takes the whole file.
+   * Takes effect on the next start; nothing in flight is cancelled.
+   */
   async toggleBackendAutoUpdate(): Promise<void> {
     if (getConfig().localModels.managed.engine === "atomic-core") {
       this.bus.emit({ type: "runtime_info", line: "Atomic Core checks for updates in the model panel. Press B to install; running models must be stopped first." });
