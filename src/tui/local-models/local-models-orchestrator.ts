@@ -1594,18 +1594,24 @@ export class LocalModelsOrchestrator {
     // Queued behind any start or stop instead of racing it, and without
     // replacing it: a load in progress finishes, then the running check in
     // selectManagedEngine refuses the change. Choosing never cancels a model.
-    return this.operations.run(() => this.chooseEngineNow(engine), false, false);
+    // Stop does cancel the choice: not being the queue's latest operation, it
+    // is not aborted by Stop, so it checks the Stop guard before saving.
+    const wanted = this.captureStopGuard();
+    return this.operations.run(() => this.chooseEngineNow(engine, wanted), false, false);
   }
 
-  private async chooseEngineNow(engine: "atomic-core" | "llama-server"): Promise<boolean> {
+  private async chooseEngineNow(engine: "atomic-core" | "llama-server", wanted: () => boolean): Promise<boolean> {
+    if (!wanted()) return false;
     const cfg = getConfig();
     if ((cfg.localModels.managed.engine ?? "llama-server") === engine) {
       this.bus.emit({ type: "composer_notice", text: `${engine === "atomic-core" ? "Atomic Chat" : "Local llama"} is already selected.` });
       return true;
     }
     try {
+      let saved = false;
       await selectManagedEngine(cfg.paths.localModelsDataDir, cfg.localModels.managed.port, cfg.localModels.embeddings.port,
-        () => persistUserLocalModelsConfig({ managed: { engine } }));
+        () => { if (!wanted()) return; persistUserLocalModelsConfig({ managed: { engine } }); saved = true; });
+      if (!saved) return false;
       this.bus.emit({ type: "runtime_info", line: `Local engine: ${engine}. Press B in Models to install it, then start your model.` });
       this.bus.emit({ type: "composer_notice", text: `Inference engine: ${engine === "atomic-core" ? "Atomic Chat" : "Local llama"}.` });
       await this.refresh();
