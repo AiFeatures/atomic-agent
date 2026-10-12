@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -48,29 +48,79 @@ describe("cloud project instructions", () => {
     expect(instructionImports("@real.md `@no.md` ``@also-no.md``\n~~~md\n@no.md\n~~~\n(@last.md)")).toEqual(["real.md", "last.md"]);
   });
 
-  it("skips missing and directory imports with diagnostics instead of failing", () => {
-    put("CLAUDE.md", "Ask @nadya, install @types/node, see @src for code.\nBODY"); mkdirSync(join(root, "src"));
-    const result = loadProjectInstructions(root);
-    expect(result.instructions.map(r => r.body)).toEqual(["Ask @nadya, install @types/node, see @src for code.\nBODY"]);
-    expect(result.diagnostics.filter(d => /missing instruction import/.test(d))).toHaveLength(2);
-    expect(result.diagnostics.join("\n")).toMatch(/non-file instruction import/);
+  it("does not expand imports in indented code blocks", () => {
+    expect(instructionImports("Intro\n\n    @code.md\n\n    @still-code.md\nText @real.md\n- item\n    @continued.md")).toEqual(["real.md", "continued.md"]);
   });
 
-  it("falls back to a bounded walk when Git cannot read the folder", () => {
-    execFileSync("git", ["init", "-q", root]);
-    writeFileSync(join(root, ".git", "HEAD"), "not a ref");
-    put("nested/AGENTS.md");
+  it("skips missing and directory imports with grouped, relative diagnostics", () => {
+    const mentions = Array.from({ length: 8 }, (_, i) => `@user${i}`).join(" ");
+    put("CLAUDE.md", `Ask @nadya, install @types/node, see @src for code. ${mentions}\nBODY`); mkdirSync(join(root, "src"));
     const result = loadProjectInstructions(root);
+    expect(result.instructions.map(r => r.body)).toHaveLength(1);
+    const missing = result.diagnostics.filter(d => /missing instruction imports/.test(d));
+    expect(missing).toHaveLength(1);
+    expect(missing[0]).toMatch(/and 5 more$/);
+    expect(result.diagnostics.join("\n")).toMatch(/non-file instruction: src/);
+    expect(result.diagnostics.join("\n")).not.toContain(base);
+  });
+
+  it("skips an imported file over the size limit without dropping other rules", () => {
+    put("big.md", "x".repeat(1024 * 1024 + 1)); put("CLAUDE.md", "see @big.md"); put("AGENTS.md", "KEEP");
+    const result = loadProjectInstructions(root);
+    expect(result.instructions.map(r => r.body).sort()).toEqual(["KEEP", "see @big.md"]);
+    expect(result.diagnostics.join("\n")).toMatch(/unreadable instruction: big\.md/);
+  });
+
+  it("falls back to the walk when Git refuses the folder, skipping dependency trees", () => {
+    const runGit = () => ({ status: 128, stdout: "", stderr: "fatal: detected dubious ownership in repository at '/x'\n" });
+    put("nested/AGENTS.md"); put("dist/AGENTS.md"); put(".venv/lib/CLAUDE.md"); put("vendor/pkg/AGENTS.md");
+    const result = loadProjectInstructions(root, undefined, { runGit });
     expect(result.instructions.map(r => r.body)).toEqual(["nested/AGENTS.md"]);
+    expect(result.diagnostics.join("\n")).toMatch(/dubious ownership/);
   });
 
-  it("fails explicitly on depth, special files and size", () => {
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("skips unreadable directories in the walk", () => {
+    put("AGENTS.md", "ROOT"); put("locked/AGENTS.md", "LOCKED"); chmodSync(join(root, "locked"), 0o000);
+    try {
+      const result = loadProjectInstructions(root);
+      expect(result.instructions.map(r => r.body)).toEqual(["ROOT"]);
+      expect(result.diagnostics.join("\n")).toMatch(/unreadable directories: locked/);
+    } finally { chmodSync(join(root, "locked"), 0o755); }
+  });
+
+  it("stops the walk and the file/byte budgets with diagnostics instead of failing", () => {
+    for (let i = 0; i < 6; i++) put(`d${i}/AGENTS.md`, `rule ${i}`);
+    put("AGENTS.md", "ROOT");
+    const capped = loadProjectInstructions(root, undefined, { maxEntries: 3 });
+    expect(capped.instructions.map(r => r.body)).toContain("ROOT");
+    expect(capped.diagnostics.join("\n")).toMatch(/stopped at 3 entries/);
+    const files = loadProjectInstructions(root, undefined, { maxFiles: 2 });
+    expect(files.instructions).toHaveLength(2);
+    expect(files.instructions[0]?.body).toBe("ROOT");
+    expect(files.diagnostics.join("\n")).toMatch(/exceed 2 files/);
+    const sized = loadProjectInstructions(root, undefined, { maxBytes: 10 });
+    expect(sized.instructions.map(r => r.body)).toEqual(["ROOT", "rule 0"]);
+    expect(sized.diagnostics.join("\n")).toMatch(/exceed 10 bytes/);
+  });
+
+  it("skips deep imports, special files and oversized root files without throwing", () => {
     for (let i = 0; i < 5; i++) put(`rules/${i}.md`, `@${i + 1}.md`);
     put("rules/5.md", "last"); put("CLAUDE.md", "@rules/0.md");
-    expect(() => loadProjectInstructions(root)).toThrow(/four hops/);
-    put("CLAUDE.md", "x".repeat(1024 * 1024 + 1)); expect(() => loadProjectInstructions(root)).toThrow(/bytes/);
-    rmSync(join(root, "CLAUDE.md")); mkdirSync(join(root, "AGENT.md"));
-    expect(() => loadProjectInstructions(root)).toThrow(/regular file/);
+    let result = loadProjectInstructions(root);
+    expect(result.instructions.some(r => r.body === "last")).toBe(false);
+    expect(result.diagnostics.join("\n")).toMatch(/four hops: rules\/4\.md/);
+    put("CLAUDE.md", "x".repeat(1024 * 1024 + 1));
+    rmSync(join(root, "AGENTS.md"), { force: true }); mkdirSync(join(root, "AGENTS.md")); put("AGENT.md", "STILL LOADED");
+    result = loadProjectInstructions(root);
+    expect(result.instructions.map(r => r.body)).toEqual(["STILL LOADED"]);
+    expect(result.diagnostics.join("\n")).toMatch(/non-file instruction: AGENTS\.md/);
+    expect(result.diagnostics.join("\n")).toMatch(/unreadable instruction: CLAUDE\.md/);
+  });
+
+  it("reports a missing workspace instead of throwing", () => {
+    const result = loadProjectInstructions(join(base, "gone"));
+    expect(result.instructions).toEqual([]);
+    expect(result.diagnostics.join("\n")).toMatch(/unavailable/);
   });
 
   it("reflects edits and removals without a cache", () => {
