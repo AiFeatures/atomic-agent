@@ -11,7 +11,7 @@ import { ReasoningBubble } from "./reasoning-bubble.js";
 import { ChatConfigureFallbackButton } from "./chat-configure-fallback-button.js";
 import { ChatSwitchBackButton } from "./chat-switch-back-button.js";
 import { SystemBubble } from "./system-bubble.js";
-import { ToolCard } from "./tool-card.js";
+import { ToolCard, ToolCardsAnnotationLine } from "./tool-card.js";
 import { UserBubble } from "./user-bubble.js";
 
 /**
@@ -84,6 +84,7 @@ export function FinalisedMessage({
                       expanded={toolsExpandedById[card.id] ?? false}
                     />
                   ))}
+                  <ToolCardsAnnotationLine cards={visible} />
                 </Box>
               );
             })()
