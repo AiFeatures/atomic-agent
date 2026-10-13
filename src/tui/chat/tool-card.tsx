@@ -8,6 +8,7 @@ import {
 } from "../render/tool-args-preview.js";
 import { theme } from "../theme/theme.js";
 import type { StreamingToolCall, ToolCardEntry } from "../tui-state.js";
+import { toolCardsAnnotation } from "./tool-cards-annotation.js";
 
 interface ToolCardProps {
   card: ToolCardEntry | StreamingToolCall;
@@ -95,6 +96,28 @@ export function ToolCard({ card, expanded }: ToolCardProps): ReactElement {
         )}
       </Box>
     </Box>
+  );
+}
+
+/**
+ * The one-line gist under a finished turn's tool cards — "read 3 files,
+ * ran 2 commands". Exactly one row or nothing: `wrap="truncate-end"`
+ * lets Yoga cut it to whatever the chat column has (83 cells in a
+ * 120-column terminal, less beside a wide rail) instead of a constant
+ * guessing that width, and `estimateMessageHeight` charges the same row
+ * off the same `toolCardsAnnotation` answer.
+ */
+export function ToolCardsAnnotationLine({
+  cards,
+}: {
+  cards: readonly ToolCardEntry[];
+}): ReactElement | null {
+  const line = toolCardsAnnotation(cards);
+  if (line === null) return null;
+  return (
+    <Text color={theme.colors.muted} dimColor wrap="truncate-end">
+      {theme.glyphs.dotSeparator} {line}
+    </Text>
   );
 }
 
