@@ -1,6 +1,6 @@
 import { readContextLengthFromRejection } from "../llm/reliability/request-size-rejection.js";
 import { resolveModelMode } from "../llm/model-mode.js";
-import { prepareStepPrompt } from "./step/step-inference.js";
+import { prepareStepPrompt, refreshStepWorkspace } from "./step/step-inference.js";
 import type { StepContext, StepDependencies } from "./step/step-contract.js";
 import type { BuildPromptInput } from "../prompt/build-prompt-types.js";
 import { contextCompactionRejection } from "./turn/compaction-recovery.js";
@@ -43,6 +43,7 @@ import { composeSteerNotice } from "./steer-notice.js";
 import { getConfig } from "../config/index.js";
 
 import { ProfileClipWarnings, reportProfileClip } from "./profile-clip-warning.js";
+import { HistoryTrimWarnings, reportHistoryTrim } from "./history-trim-warning.js";
 
 /**
  * What the user reads when the step loop ran out before the model
@@ -59,6 +60,8 @@ import { ProfileClipWarnings, reportProfileClip } from "./profile-clip-warning.j
 export class AgentLoop {
   /** Once-per-session dedupe for the `### profile` clip warning. */
   private readonly profileClipWarnings = new ProfileClipWarnings();
+  /** Once-per-cut notice that the packer left older history out (ATO-295). */
+  private readonly historyTrimWarnings = new HistoryTrimWarnings();
 
   constructor(private readonly deps: AgentLoopDependencies) {}
 
@@ -418,6 +421,7 @@ export class AgentLoop {
         const contextSlice = contextProviderId && (initialMode?.mode === "cloud" || modelMode?.mode === "cloud")
           ? this.deps.resolveLlmSlice?.(contextProviderId) ?? pinnedSlice : pinnedSlice;
         const stepDeps: StepDependencies = {
+            prepareWorkspace: this.deps.prepareWorkspace,
             registry: this.deps.registry,
             commitSession: (next) => {
               state = next;
@@ -518,12 +522,23 @@ export class AgentLoop {
                   ...(this.deps.logger ? { logger: this.deps.logger } : {}),
                   emit: (clipped) => this.deps.onEvent?.(clipped),
                 });
+                // ATO-295: the packer cut older history (compaction off,
+                // failed or not possible). Said once per cut, not per step.
+                reportHistoryTrim({
+                  warnings: this.historyTrimWarnings,
+                  sessionId: state.id,
+                  stepIndex: i,
+                  prompt: event.prompt,
+                  ...(this.deps.logger ? { logger: this.deps.logger } : {}),
+                  emit: (trimmed) => this.deps.onEvent?.(trimmed),
+                });
               }
             },
             ...(this.deps.metrics ? { metrics: this.deps.metrics } : {}),
             ...(this.deps.logger ? { logger: this.deps.logger } : {}),
             tracker: loopTracker,
           };
+        refreshStepWorkspace(stepContext, stepDeps);
         if (this.deps.compaction) {
           compactionInput = prepareStepPrompt(stepContext, stepDeps).promptInput;
           let maintenance = this.deps.compaction.beforeStep(compactionInput, {

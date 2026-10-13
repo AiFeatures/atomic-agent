@@ -9,7 +9,7 @@ import { normalizeLocalLlmBaseUrl } from "../persist-user-local-models-config.js
 import { isThemeName, THEME_NAMES } from "../theme/theme.js";
 import { parseRunModeCommand } from "./dispatch-run-mode.js";
 import { parseSlashCommand } from "./slash-command-parser.js";
-import { resolveSlashCommand, SLASH_COMMANDS } from "./slash-commands.js";
+import { resolveSlashCommand, SLASH_COMMANDS, type SlashCommandDef } from "./slash-commands.js";
 import { renderToolsOverview, renderToolsSearch } from "./tools-listing.js";
 import { parseModelModeCommand, MODEL_MODE_USAGE, type ModelModeCommand } from "./model-mode-command.js";
 
@@ -19,6 +19,7 @@ export interface SlashDispatchCallbacks {
 }
 
 export interface SlashDispatchResult {
+  readonly skillInvocation?: { name: string; input: string };
   readonly modelModeCommand?: ModelModeCommand;
   /**
    * Reducer actions the caller should dispatch in order. Empty when the
@@ -68,6 +69,7 @@ export interface SlashDispatchResult {
   readonly skillHubInstallId?: string;
   readonly localModelsPullModelId?: string;
   readonly localModelsUseModelId?: string;
+  readonly localModelsEngine?: "atomic-core" | "llama-server";
   readonly triggerLocalModelsStatus?: boolean;
   /**
    * Theme name the caller should activate via `setActiveTheme` before
@@ -153,7 +155,7 @@ export interface SlashDispatchResult {
  * the caller makes the handler unit-testable and lets the reducer stay
  * pure.
  */
-export function dispatchSlashCommand(buffer: string): SlashDispatchResult {
+export function dispatchSlashCommand(buffer: string, skills: readonly SlashCommandDef[] = []): SlashDispatchResult {
   const parsed = parseSlashCommand(buffer);
   if (parsed === null) {
     return {
@@ -172,7 +174,7 @@ export function dispatchSlashCommand(buffer: string): SlashDispatchResult {
       persistLlamaUrl: undefined,
     };
   }
-  const resolved = resolveSlashCommand(parsed.name);
+  const resolved = resolveSlashCommand(parsed.name, skills);
   if (resolved === null) {
     return {
       actions: [],
@@ -190,6 +192,9 @@ export function dispatchSlashCommand(buffer: string): SlashDispatchResult {
       forwardAsMessage: false,
       persistLlamaUrl: undefined,
     };
+  }
+  if (resolved.skillName) {
+    return pureActions([], { skillInvocation: { name: resolved.skillName, input: parsed.args } });
   }
   switch (resolved.name) {
     case "report":
@@ -622,6 +627,12 @@ function dispatchModelsSub(
       ]),
       localModelsUseModelId: bits[1],
     };
+  }
+  if (bits[0] === "engine") {
+    if (bits[1] !== "atomic-core" && bits[1] !== "llama-server") {
+      return pureActions([], { systemMessage: "usage: /model engine <engine> (stop models first)" });
+    }
+    return { ...pureActions([]), localModelsEngine: bits[1] };
   }
   if (bits[0] === "status") {
     return pureActions([], { triggerLocalModelsStatus: true });

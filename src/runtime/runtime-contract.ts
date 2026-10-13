@@ -447,7 +447,9 @@ export interface AgentRuntime {
    * list. The orchestrator reads the returned transcript and discards
    * it. See `src/session/fusion-worker-session.ts`.
    */
-  createEphemeralSession(meta: FusionWorkerMeta): SessionState;
+  createEphemeralSession(meta: FusionWorkerMeta, workingDir?: string): SessionState;
+  /** Session-scoped cloud skills/instructions; null retains the legacy local view. */
+  getSessionWorkspace(session: SessionState | string): import("../session/workspace-context.js").SessionWorkspace | null;
   /** Maintain context without creating a turn or a transcript message. */
   compactSession(sessionId: string, options?: { signal?: AbortSignal }): Promise<CompactionResult>;
   getSessionCompaction(sessionId: string): SessionCompaction | null;
@@ -533,6 +535,18 @@ export interface AgentRuntime {
    * guarded); a no-op while analytics is off.
    */
   reportModelConfigured(provider: string, kind: "local" | "cloud"): void;
+  /**
+   * Report that the local engine could not be installed or started and
+   * the operator was offered the way forward (`local_engine_failed`).
+   * `stage` and `reasonCode` are fixed words from the engine's error, never
+   * a message or a path. A no-op while analytics is off. Optional so test
+   * doubles and older hosts need not implement it.
+   */
+  reportLocalEngineFailed?(context: {
+    engine: "atomic-core" | "llama-server";
+    stage: string;
+    reasonCode: string;
+  }): void;
   /**
    * Live approval level (1 = every gated action asks … 5 = approve
    * everything). Reads the gate, not the boot-time config snapshot, so

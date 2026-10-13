@@ -228,12 +228,10 @@ export async function tuiCommand(args: string[]): Promise<number> {
     handlers: {
       onAgentEvent: (event, sessionId) => bus.emitAgentEvent(event, sessionId),
       onApprovalRequest: (request) => bus.emitApproval(request),
-      onSkillRegistryChange: (entries, dropped) =>
-        bus.emit({
-          type: "skill_count_changed",
-          count: entries.length,
-          dropped,
-        }),
+      onSkillRegistryChange: (entries, dropped) => {
+        if (orchestratorForChannelStatus) orchestratorForChannelStatus.skills.refresh();
+        else bus.emit({ type: "skill_count_changed", count: entries.length, dropped });
+      },
       onChannelStatus: (status) => {
         // Telegram status flows through the panel orchestrator, which
         // both updates the panel slice and emits a runtime_info line
@@ -552,11 +550,14 @@ export async function tuiCommand(args: string[]): Promise<number> {
         onTaskRunNowRequested: (taskId) => orchestrator.tasks.runNow(taskId),
         onTaskCreateSubmitted: (input) => orchestrator.tasks.createTask(input),
         onSkillsAutoRefreshStart: () => orchestrator.skills.startAutoRefresh(),
+        prepareSkillInvocation: (name, input) => orchestrator.skills.prepareInvocation(name, input),
         onSkillsRefreshRequested: () => orchestrator.skills.refresh(),
         onSkillDetailRequested: (name) =>
           void orchestrator.skills.openDetail(name),
         onSkillToggleRequested: (name) =>
           void orchestrator.skills.toggleSkill(name),
+        onWorkspaceSkillToggleRequested: (name) => orchestrator.skills.toggleWorkspaceSkill(name),
+        onProjectSkillsToggleRequested: () => orchestrator.skills.toggleProjectSkills(),
         onSkillRemoveRequested: (name) =>
           void orchestrator.skills.requestRemove(name),
         onSkillRemoveConfirmed: (name) =>
@@ -677,12 +678,17 @@ export async function tuiCommand(args: string[]): Promise<number> {
           void orchestrator.localModels.pullModel(id, mode),
         onLocalModelsPullCancelRequested: (kind) =>
           void orchestrator.localModels.cancelPull(kind),
+        onComposerEngineRequested: (engine, leg) => { void orchestrator.chooseComposerEngine(engine, leg); },
+        onComposerFusionModelRequested: (leg, model) => { void orchestrator.chooseComposerFusionModel(leg, model); },
+        onLocalModelsEngineRequested: (engine) => { void orchestrator.localModels.chooseEngine(engine); },
         onLocalModelsSetActiveRequested: (id) =>
           void orchestrator.localModels.setActive(id),
         onLocalModelsUseManagedRequested: () =>
           void orchestrator.localModels.useManagedMode(),
         onLocalModelsBackendPullRequested: () =>
           void orchestrator.localModels.pullBackend(),
+        onLocalModelsCoreRetryRequested: () =>
+          void orchestrator.localModels.retryCoreEngine(),
         onLocalModelsRefreshRequested: () =>
           void orchestrator.localModels.refresh(),
         onLocalModelsHfResolveRequested: (reference) =>
