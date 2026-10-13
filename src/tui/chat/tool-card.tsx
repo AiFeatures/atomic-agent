@@ -8,7 +8,10 @@ import {
 } from "../render/tool-args-preview.js";
 import { theme } from "../theme/theme.js";
 import type { StreamingToolCall, ToolCardEntry } from "../tui-state.js";
-import { toolCardsAnnotation } from "./tool-cards-annotation.js";
+import {
+  annotationTail,
+  toolCardsAnnotationParts,
+} from "./tool-cards-annotation.js";
 
 interface ToolCardProps {
   card: ToolCardEntry | StreamingToolCall;
@@ -101,23 +104,40 @@ export function ToolCard({ card, expanded }: ToolCardProps): ReactElement {
 
 /**
  * The one-line gist under a finished turn's tool cards — "read 3 files,
- * ran 2 commands". Exactly one row or nothing: `wrap="truncate-end"`
- * lets Yoga cut it to whatever the chat column has (83 cells in a
- * 120-column terminal, less beside a wide rail) instead of a constant
- * guessing that width, and `estimateMessageHeight` charges the same row
- * off the same `toolCardsAnnotation` answer.
+ * ran 2 commands · 1 failed". Exactly one row or nothing: the work list
+ * is `wrap="truncate-end"` and the only part that shrinks, so Yoga cuts
+ * it to whatever the chat column has (83 cells in a 120-column terminal,
+ * less beside a wide rail) while the failure / unfinished count beside
+ * it never shrinks and survives a narrow terminal. `estimateMessageHeight`
+ * charges the same row off the same `toolCardsAnnotationParts` answer.
  */
 export function ToolCardsAnnotationLine({
   cards,
 }: {
   cards: readonly ToolCardEntry[];
 }): ReactElement | null {
-  const line = toolCardsAnnotation(cards);
-  if (line === null) return null;
+  const parts = toolCardsAnnotationParts(cards);
+  if (parts === null) return null;
+  const tail = annotationTail(parts);
+  const lead = theme.glyphs.dotSeparator;
   return (
-    <Text color={theme.colors.muted} dimColor wrap="truncate-end">
-      {theme.glyphs.dotSeparator} {line}
-    </Text>
+    <Box flexDirection="row" height={1} overflow="hidden">
+      {parts.done.length > 0 ? (
+        <Box flexShrink={1} minWidth={0}>
+          <Text color={theme.colors.muted} dimColor wrap="truncate-end">
+            {lead} {parts.done}
+          </Text>
+        </Box>
+      ) : null}
+      {tail.length > 0 ? (
+        <Box flexShrink={0}>
+          <Text color={theme.colors.muted} dimColor wrap="truncate-end">
+            {parts.done.length > 0 ? ` ${lead} ` : `${lead} `}
+            {tail}
+          </Text>
+        </Box>
+      ) : null}
+    </Box>
   );
 }
 

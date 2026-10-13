@@ -1,5 +1,5 @@
 import type { ChatMessage, ToolCardEntry, TuiState } from "../tui-state.js";
-import { toolCardsAnnotation } from "./tool-cards-annotation.js";
+import { toolCardsAnnotationParts } from "./tool-cards-annotation.js";
 
 /**
  * Estimated number of terminal rows occupied by a finalised chat
@@ -26,7 +26,7 @@ const BUBBLE_OVERHEAD_ROWS = 3; // marginTop + paddingTop + paddingBottom
 const REASONING_BUBBLE_OVERHEAD_ROWS = 5; // marginTop + paddingTop + 1-line header + paddingBottom + safety
 const TOOL_CARD_BASE_ROWS = 2;
 const ASSISTANT_FOOTER_ROWS = 1;
-/** `ToolCardsAnnotationLine` — `wrap="truncate-end"`, so always one row. */
+/** `ToolCardsAnnotationLine` is a `height={1}` row that truncates, never wraps. */
 const TOOL_CARDS_ANNOTATION_ROWS = 1;
 /**
  * `FinalisedMessage` hangs a button footer under every finalised bubble,
@@ -60,7 +60,7 @@ export function estimateMessageHeight(message: ChatMessage): number {
       0,
     );
     // The one-line gist under the cards; truncated, never wrapped.
-    if (toolCardsAnnotation(visibleToolCards) !== null) {
+    if (toolCardsAnnotationParts(visibleToolCards) !== null) {
       total += TOOL_CARDS_ANNOTATION_ROWS;
     }
     if ((message.toolSteps ?? 0) > 0) {
