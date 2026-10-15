@@ -202,7 +202,11 @@ async function startCore(dataDir: string, version: string, signal?: AbortSignal)
 
 /** Every operation keeps a lease until it settles, including long downloads and model loads. */
 export async function withCoreClient<T>(dataDir: string, version: string, fn: (client: CoreControlClient, clientId: string) => Promise<T>, signal?: AbortSignal): Promise<T> {
-  const client = await ensureCore(dataDir, version, signal);
+  return withCoreLease(await ensureCore(dataDir, version, signal), fn);
+}
+
+/** Hold a client lease on an already connected Core while `fn` runs. */
+export async function withCoreLease<T>(client: CoreControlClient, fn: (client: CoreControlClient, clientId: string) => Promise<T>): Promise<T> {
   const lease = await client.call<{ client: { id: string }; heartbeat_interval_ms: number }>("/clients", { name: "Atomic Agent", pid: process.pid });
   const id = lease.client.id;
   const timer = setInterval(() => { void client.call(`/clients/${encodeURIComponent(id)}/heartbeat`, {}).catch(() => {}); }, Math.max(1000, lease.heartbeat_interval_ms));
