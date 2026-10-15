@@ -207,7 +207,7 @@ export function buildImageGenerateTool(options: ImageGenerateToolOptions): ToolD
         sessionId: ctx.sessionId,
         tool: IMAGE_GENERATE_TOOL,
         category: "paid_generation",
-        reason: `generate ${plural(args.count)} on OpenRouter with ${args.model ?? "the default image model"} (paid by the OpenRouter account) and save it in the working folder` +
+        reason: `generate ${plural(args.count)} on OpenRouter with ${args.model ?? "the default image model"} (paid by the OpenRouter account) and save ${args.count === 1 ? "it" : "them"} in the working folder` +
           (installFirst ? "; first downloads the Atomic Chat engine (about 100 MB)" : ""),
         preview: args.prompt,
         affectedResources: ["openrouter.ai"],
@@ -229,30 +229,49 @@ export function buildImageGenerateTool(options: ImageGenerateToolOptions): ToolD
           const [width, height] = RATIOS[args.ratio]!;
           await registerOpenRouterMedia(client, apiKey, ctx.signal);
           const models = await listCoreImageModels(client, "openrouter", ctx.signal);
-          modelId = args.model ?? defaultImageModel(models);
-          const info = models.find(m => m.id === modelId);
-          if (info || !args.model) reportedModel = modelId;
           const notes: string[] = [];
-          const aspectRatio = cloudAspectRatio(args.ratio, info);
-          if (aspectRatio === undefined) notes.push(`${modelId} does not offer ${args.ratio}, so it used its default shape.`);
-          const request: CoreImageRequest = {
-            prompt: args.prompt, width, height, steps: CLOUD_STEPS, cfgScale: CLOUD_CFG_SCALE, batchSize: 1,
-            target: { provider: "openrouter", model: modelId },
-            ...(aspectRatio ? { remote: { aspectRatio } } : {}),
+          const runOn = async (model: string) => {
+            const info = models.find(m => m.id === model);
+            const aspectRatio = cloudAspectRatio(args.ratio, info);
+            const request: CoreImageRequest = {
+              prompt: args.prompt, width, height, steps: CLOUD_STEPS, cfgScale: CLOUD_CFG_SCALE, batchSize: 1,
+              target: { provider: "openrouter", model },
+              ...(aspectRatio ? { remote: { aspectRatio } } : {}),
+            };
+            // Core varies the seed only inside one job: separate jobs get
+            // seed, seed+1, ... or every picture would be the same.
+            let seedOffset = 0;
+            const jobs = cloudBatches(args.count, info).map(batchSize => {
+              const seed = args.seed === undefined ? undefined : (args.seed + seedOffset) % 0x1_0000_0000;
+              seedOffset += batchSize;
+              return { ...request, batchSize, ...(seed !== undefined ? { seed } : {}) };
+            });
+            const settled = await Promise.allSettled(jobs.map(job => runCoreImageJob(client, job, { signal: ctx.signal })));
+            return {
+              info, aspectRatio, total: settled.length,
+              done: settled.flatMap(r => r.status === "fulfilled" ? [r.value] : []),
+              failed: settled.flatMap(r => r.status === "rejected" ? [r.reason as unknown] : []),
+            };
           };
-          // Core varies the seed only inside one job: separate jobs get
-          // seed, seed+1, ... or every picture would be the same.
-          let seedOffset = 0;
-          const jobs = cloudBatches(args.count, info).map(batchSize => {
-            const seed = args.seed === undefined ? undefined : (args.seed + seedOffset) % 0x1_0000_0000;
-            seedOffset += batchSize;
-            return { ...request, batchSize, ...(seed !== undefined ? { seed } : {}) };
-          });
-          const settled = await Promise.allSettled(jobs.map(job => runCoreImageJob(client, job, { signal: ctx.signal })));
-          const done = settled.flatMap(s => s.status === "fulfilled" ? [s.value] : []);
-          const failed = settled.flatMap(s => s.status === "rejected" ? [s.reason as unknown] : []);
+
+          modelId = args.model ?? defaultImageModel(models);
+          let attempt = await runOn(modelId);
+          // The default model is Core's pick, not the user's: when its
+          // upstream refuses for capacity (a 429 or 502 bills nothing), the
+          // next catalog model gets one try.
+          const fallback = models.find(m => m.id !== modelId)?.id;
+          if (!args.model && attempt.done.length === 0 && fallback && !ctx.signal.aborted &&
+              attempt.failed.every(e => e instanceof CoreImageError && (e.code === "REMOTE_RATE_LIMITED" || e.code === "REMOTE_UNAVAILABLE"))) {
+            notes.push(`${modelId} was busy at OpenRouter (${(attempt.failed[0] as Error).message}), so ${fallback} made it instead.`);
+            modelId = fallback;
+            attempt = await runOn(modelId);
+          }
+          if (attempt.info || !args.model) reportedModel = modelId;
+          if (attempt.aspectRatio === undefined) notes.push(`${modelId} does not offer ${args.ratio}, so it used its default shape.`);
+          const done = attempt.done;
+          const failed = attempt.failed;
           if (done.length === 0) throw failed[0];
-          if (failed.length > 0) notes.push(`${failed.length} of the ${settled.length} requests failed: ${(failed[0] as Error).message}`);
+          if (failed.length > 0) notes.push(`${failed.length} of the ${attempt.total} requests failed: ${(failed[0] as Error).message}`);
           return { jobs: done, notes };
         }, { signal: ctx.signal });
 

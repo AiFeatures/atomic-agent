@@ -141,6 +141,34 @@ describe("image.generate", () => {
     expect(core.submitted[0]).toMatchObject({ target: { model: "acme/private-model" } });
   });
 
+  it("moves to the next catalog model when the default one is rate limited upstream, never when the user picked it", async () => {
+    const submitted: Array<{ target: { model: string } }> = [];
+    const call = vi.fn(async (path: string, body?: unknown) => {
+      if (path === "/diffusion/jobs") { submitted.push(body as { target: { model: string } }); return { jobId: `j${submitted.length}` }; }
+      if (path.startsWith("/diffusion/jobs/")) {
+        const id = path.split("/")[3]!;
+        const model = submitted[Number(id.slice(1)) - 1]!.target.model;
+        return model === "google/gemini-nano-banana-2.1"
+          ? { job: { id, state: "failed", outputs: [], error: { code: "REMOTE_RATE_LIMITED", message: "quota" } } }
+          : { job: { id, state: "completed", outputs: [{ id: `${id}-00`, path: produced, width: 1, height: 1, sizeBytes: 4 }] } };
+      }
+      if (path.startsWith("/media/")) return { models: [{ id: "google/gemini-nano-banana-2.1", default: true }, { id: "openai/gpt-image-2.5-flare" }] };
+      return {};
+    });
+    const withCore = (async (_d: string, fn: (c: CoreControlClient, f: string) => Promise<unknown>) => fn({ call } as unknown as CoreControlClient, "/d")) as typeof withImageCore;
+    const { built, report } = tool({ withCore });
+    const result = await built.run({ prompt: "a fox" }, ctx());
+    expect(result.status).toBe("ok");
+    expect(submitted.map(j => j.target.model)).toEqual(["google/gemini-nano-banana-2.1", "openai/gpt-image-2.5-flare"]);
+    expect(result.summary).toContain("made it instead");
+    expect(report).toHaveBeenCalledWith(expect.objectContaining({ model: "openai/gpt-image-2.5-flare", success: true }));
+
+    submitted.length = 0;
+    const picked = await built.run({ prompt: "a fox", model: "google/gemini-nano-banana-2.1" }, ctx());
+    expect(picked.status).toBe("error");
+    expect(submitted).toHaveLength(1);
+  });
+
   it("reports a failure with Core's code only", async () => {
     const call = vi.fn(async (path: string) => {
       if (path === "/diffusion/jobs") return { jobId: "j" };
