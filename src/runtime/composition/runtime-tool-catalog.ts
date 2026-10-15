@@ -378,9 +378,10 @@ export async function connectRuntimeMcpCatalog(input: {
   // The vision gate is memoised the same way and for the same reason:
   // switching to a provider that cannot see drops `vision.describe`
   // from the prompt, switching back restores it — one prefix change per
-  // flip, none while the route holds.
+  // flip, none while the route holds. The image gate too: saving or
+  // removing an OpenRouter key adds or drops `image.generate`.
   const liveDescriptorGates = (): string =>
-    `${resolveCurrentRunMode().effective === "fusion"}|${visionOnLiveRoute()}`;
+    `${resolveCurrentRunMode().effective === "fusion"}|${visionOnLiveRoute()}|${openRouterImageKey(getConfig()) !== undefined}`;
   let cachedToolDescriptors = rebuildToolDescriptorsFromMcp();
   let cachedDescriptorGates = liveDescriptorGates();
   const rebuildToolDescriptors = (): readonly ToolDescriptor[] => {

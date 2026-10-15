@@ -1,9 +1,10 @@
 import { setTimeout as delay } from "node:timers/promises";
 import type { DownloadFileOptions } from "../downloads/download-file.js";
-import { CoreRequestError, ensureCore, withCoreLease, type CoreControlClient } from "./core-client.js";
+import { acquireCoreLease, CoreRequestError, ensureCore, type CoreControlClient } from "./core-client.js";
+import { shutdownIdleCoreClient } from "./core-idle.js";
 import { installCore, isCoreInstalled } from "./core-install.js";
 import { withCoreOperation } from "./core-operation.js";
-import { CORE_VERSION, coreDataDir } from "./core-state.js";
+import { activeCoreVersion, CORE_VERSION, coreDataDir } from "./core-state.js";
 
 /**
  * Image generation through Atomic Core's diffusion jobs (Core 0.15+):
@@ -134,7 +135,7 @@ export function describeCoreImageError(code: string | undefined, message: string
 
 function toImageError(err: unknown, cloud: boolean): unknown {
   if (err instanceof CoreRequestError) {
-    return new CoreImageError(describeCoreImageError(err.code, err.message, cloud), err.code ?? `HTTP_${err.status}`, { cause: err });
+    return new CoreImageError(describeCoreImageError(err.code, err.message, cloud), err.code ?? "HTTP_ERROR", { cause: err });
   }
   return err;
 }
@@ -219,7 +220,10 @@ export async function runCoreImageJob(client: CoreControlClient, request: CoreIm
       } catch (err) {
         if (opts.signal?.aborted) throw err;
         // A dropped poll is not a failed job; give up only when Core stays unreachable.
-        if (++misses >= 5) throw new CoreImageError("Atomic Core stopped answering while the image was being made.", "CORE_UNREACHABLE", { cause: err });
+        if (++misses >= 5) {
+          await cancel();
+          throw new CoreImageError("Atomic Core stopped answering while the image was being made.", "CORE_UNREACHABLE", { cause: err });
+        }
         await delay(opts.pollMs ?? POLL_MS, undefined, opts.signal ? { signal: opts.signal } : {});
         continue;
       }
@@ -248,24 +252,49 @@ export interface WithImageCoreOptions {
   /** The Core binary is about to be downloaded (first image on a computer without Core). */
   onCoreInstall?: () => void;
   onCoreProgress?: DownloadFileOptions["onProgress"];
+  /** How long to wait for another engine operation (a model load holds it up to 4 minutes). */
+  waitMs?: number;
+}
+
+/** A chat model load holds the engine lock for up to 240 s; a picture waits that out. */
+export const IMAGE_CORE_WAIT_MS = 5 * 60_000;
+
+/** Whether the first picture on this computer downloads the Core binary first. */
+export function imageCoreNeedsInstall(dataDir: string): boolean {
+  return !isCoreInstalled(dataDir, CORE_VERSION);
 }
 
 /**
  * Run `fn` on a started Core of this build's pin, holding a client lease
- * for the whole generation. The Core binary is installed first when it is
- * missing; no inference backend is installed for it. Only the start is
- * serialized with other engine operations: a generation that runs for
- * minutes must not block a model load in another window.
+ * for the whole generation. Install (the Core binary alone, no inference
+ * backend), start and lease happen under the engine operation lock: two
+ * first pictures, or one beside a backend install, share the download's
+ * staging file, and another window's idle-Core stop must not land between
+ * the start and the lease. The generation itself runs outside the lock,
+ * so it never blocks a model load for minutes.
+ *
+ * When the active Core is an older pin, this one was started beside it
+ * only for pictures, and nothing else would ever stop it (idle stops look
+ * at the active version): it is shut down again when idle.
  */
 export async function withImageCore<T>(dataDir: string, fn: (client: CoreControlClient, dataFolder: string) => Promise<T>, opts: WithImageCoreOptions = {}): Promise<T> {
   const version = CORE_VERSION;
-  if (!isCoreInstalled(dataDir, version)) {
-    opts.onCoreInstall?.();
-    await installCore(dataDir, version, {
-      ...(opts.signal ? { signal: opts.signal } : {}),
-      ...(opts.onCoreProgress ? { onProgress: opts.onCoreProgress } : {}),
-    });
+  const { client, lease } = await withCoreOperation(dataDir, async () => {
+    if (!isCoreInstalled(dataDir, version)) {
+      opts.onCoreInstall?.();
+      await installCore(dataDir, version, {
+        ...(opts.signal ? { signal: opts.signal } : {}),
+        ...(opts.onCoreProgress ? { onProgress: opts.onCoreProgress } : {}),
+      });
+    }
+    const started = await ensureCore(dataDir, version, opts.signal);
+    return { client: started, lease: await acquireCoreLease(started) };
+  }, { waitMs: opts.waitMs ?? IMAGE_CORE_WAIT_MS });
+  try { return await fn(client, coreDataDir(dataDir, version)); }
+  finally {
+    await lease.release();
+    if (activeCoreVersion(dataDir) !== version) {
+      await withCoreOperation(dataDir, () => shutdownIdleCoreClient(client), { waitMs: 2_000 }).catch(() => false);
+    }
   }
-  const client = await withCoreOperation(dataDir, () => ensureCore(dataDir, version, opts.signal));
-  return withCoreLease(client, c => fn(c, coreDataDir(dataDir, version)));
 }

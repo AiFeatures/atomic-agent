@@ -44,7 +44,7 @@ function tool(over: Partial<ImageGenerateToolOptions> & Pick<ImageGenerateToolOp
   const report = vi.fn();
   const built = buildImageGenerateTool({
     approvals: { request } as never, approvalRequired: true,
-    dataDir: () => dir, openRouterKey: () => "sk-or-test", report,
+    dataDir: () => dir, openRouterKey: () => "sk-or-test", report, needsCoreInstall: () => false,
     now: () => new Date(2026, 9, 15, 14, 22, 33),
     ...over,
   });
@@ -65,7 +65,7 @@ describe("image.generate", () => {
     expect(result.summary).toContain("reply.attachments");
     expect(core.call).toHaveBeenCalledWith("/cloud/providers/openrouter", expect.objectContaining({ api_key: "sk-or-test" }), expect.anything());
     expect(core.submitted).toEqual([expect.objectContaining({
-      prompt: "a fox", batchSize: 1,
+      prompt: "a fox", batchSize: 1, steps: 0, cfgScale: 0,
       target: { provider: "openrouter", model: "google/gemini-nano-banana-2.1" },
       remote: { aspectRatio: "16:9" },
     })]);
@@ -83,15 +83,25 @@ describe("image.generate", () => {
     expect(core.submitted).toHaveLength(2);
   });
 
-  it("runs a local job without asking when there is no key", async () => {
+  it("gives a different seed to each job when the model draws one picture per request", async () => {
+    const core = fakeCore([{ id: "bytedance-seed/seedream-5-0-flash", default: true, params: { seed: true } }]);
+    const { built } = tool({ withCore: core.withCore });
+    await built.run({ prompt: "a fox", count: 3, seed: 7 }, ctx());
+    expect(core.submitted.map(j => (j as { seed?: number }).seed)).toEqual([7, 8, 9]);
+  });
+
+  it("says when the first picture downloads the engine", async () => {
     const core = fakeCore();
-    const { built, request, report } = tool({ withCore: core.withCore, openRouterKey: () => undefined });
-    const result = await built.run({ prompt: "a fox" }, ctx());
-    expect(result.status).toBe("ok");
-    expect(request).not.toHaveBeenCalled();
-    expect(core.call).toHaveBeenCalledWith("/diffusion/config", { dataFolder: "/core/data" }, expect.anything());
-    expect(core.submitted[0]).not.toHaveProperty("target");
-    expect(report).toHaveBeenCalledWith(expect.objectContaining({ kind: "local", model: "local" }));
+    const { built, request } = tool({ withCore: core.withCore, needsCoreInstall: () => true });
+    await built.run({ prompt: "a fox" }, ctx());
+    expect(request).toHaveBeenCalledWith(expect.objectContaining({ reason: expect.stringMatching(/downloads the Atomic Chat engine/) }), expect.anything());
+  });
+
+  it("answers plainly for local models and a missing key, without touching Core", async () => {
+    const withCore = vi.fn() as unknown as typeof withImageCore;
+    expect((await tool({ withCore }).built.run({ prompt: "a fox", model: "local" }, ctx())).summary).toMatch(/not available in Atomic Agent yet/);
+    expect((await tool({ withCore, openRouterKey: () => undefined }).built.run({ prompt: "a fox" }, ctx())).summary).toMatch(/needs an OpenRouter API key/);
+    expect(withCore).not.toHaveBeenCalled();
   });
 
   it("refuses a cloud model without a key, and bad arguments, before touching Core", async () => {
@@ -114,6 +124,23 @@ describe("image.generate", () => {
     expect(core.submitted).toHaveLength(0);
   });
 
+  it("keeps the paid pictures' paths when copying them into the folder fails", async () => {
+    const core = fakeCore();
+    const { built } = tool({ withCore: core.withCore });
+    const result = await built.run({ prompt: "a fox" }, { ...ctx(), workingDir: join(work, "missing", "dir") });
+    expect(result.status).toBe("error");
+    expect(result.summary).toContain(produced);
+    expect(result.details.corePaths).toEqual([produced]);
+  });
+
+  it("reports a model the user typed as custom unless Core's catalog lists it", async () => {
+    const core = fakeCore();
+    const { built, report } = tool({ withCore: core.withCore });
+    await built.run({ prompt: "a fox", model: "acme/private-model" }, ctx());
+    expect(report).toHaveBeenCalledWith(expect.objectContaining({ model: "custom" }));
+    expect(core.submitted[0]).toMatchObject({ target: { model: "acme/private-model" } });
+  });
+
   it("reports a failure with Core's code only", async () => {
     const call = vi.fn(async (path: string) => {
       if (path === "/diffusion/jobs") return { jobId: "j" };
@@ -134,6 +161,7 @@ describe("cloud request shape", () => {
   it("batches only as far as the model draws at once", () => {
     expect(cloudBatches(3, { id: "m", params: { n: { max: 4 } } })).toEqual([3]);
     expect(cloudBatches(3, { id: "m" })).toEqual([1, 1, 1]);
+    expect(cloudBatches(3, { id: "m", params: { n: { max: 2 } } })).toEqual([2, 1]);
   });
   it("sends the ratio only when the model offers it", () => {
     expect(cloudAspectRatio("16:9", { id: "m", params: { aspect_ratios: { values: ["1:1"] } } })).toBeUndefined();

@@ -5,9 +5,9 @@ import { compressToolResult, type CompressedToolResult } from "../../compressor/
 import { requireApproval, type DangerousToolOptions } from "../../approval/dangerous-tool.js";
 import type { ImageGeneratedContext } from "../../analytics/analytics-events.js";
 import {
-  configureCoreDiffusion,
   CoreImageError,
   defaultImageModel,
+  imageCoreNeedsInstall,
   listCoreImageModels,
   registerOpenRouterMedia,
   runCoreImageJob,
@@ -24,9 +24,9 @@ export const IMAGE_COUNT_MAX = 4;
 const PROMPT_MAX_CHARS = 4_000;
 
 /**
- * Aspect ratios the tool takes, with the pixel size a local model draws
- * for each (about one megapixel, multiples of 64). A cloud model gets
- * the ratio itself; its catalog decides the pixels.
+ * Aspect ratios the tool takes, with the pixel size for each (about one
+ * megapixel, multiples of 64). Core requires width and height; a cloud
+ * model gets the ratio itself and its catalog decides the pixels.
  */
 const RATIOS: Readonly<Record<string, readonly [number, number]>> = {
   "1:1": [1024, 1024],
@@ -42,19 +42,24 @@ const SIZE_WORDS: Readonly<Record<string, string>> = {
 };
 
 /**
- * Sampler settings for a local job until the local model catalog
- * (ATO-411) supplies each model's own: the turbo distillations the
- * catalog defaults to want few steps and no guidance. A cloud job
- * ignores them, but Core requires the fields.
+ * Core requires `steps` and `cfgScale` on every job and forwards them to
+ * a cloud model whose catalog entry takes them; 0 is "the model's
+ * default" there.
  */
-const LOCAL_STEPS = 8;
-const LOCAL_CFG_SCALE = 1;
+const CLOUD_STEPS = 0;
+const CLOUD_CFG_SCALE = 0;
+
+/** Until local image models can be installed (ATO-411), `model: "local"` gets this. */
+const NO_LOCAL_YET = "Local image models are not available in Atomic Agent yet; they come in a later update. Without `model`, the picture is made in the cloud with the OpenRouter key.";
+const NO_KEY = "Image generation needs an OpenRouter API key for now (local image models come in a later update). Add one in the provider settings and try again.";
 
 export interface ImageGenerateToolOptions extends DangerousToolOptions {
   /** `config.paths.localModelsDataDir`, read per call. */
   dataDir: () => string;
   /** The user's OpenRouter key, read per call; undefined when none is set. */
   openRouterKey: () => string | undefined;
+  /** Whether the first picture downloads the Core binary; default reads the data folder. */
+  needsCoreInstall?: (dataDir: string) => boolean;
   /** One shape-only analytics record per call (`captureImageGenerated`). */
   report?: (event: ImageGeneratedContext) => void;
   /** Test seam. */
@@ -69,6 +74,12 @@ interface ParsedArgs {
   seed?: number;
   model?: string;
   local: boolean;
+}
+
+/** A cloud model's catalog says how many pictures one request may draw. */
+function nMaxOf(model: CoreMediaModel | undefined): number {
+  const n = model?.params?.n?.max;
+  return typeof n === "number" && Number.isInteger(n) && n >= 1 ? n : 1;
 }
 
 function parseArgs(raw: Record<string, unknown>): ParsedArgs {
@@ -141,13 +152,15 @@ async function saveIntoWorkingDir(outputs: readonly CoreImageOutput[], workingDi
 }
 
 /**
- * Jobs for `count` pictures on a cloud model: one job when the model
- * draws that many at once (`params.n.max`), else one job per picture
- * (Core runs up to 4 cloud jobs at a time).
+ * Jobs for `count` pictures on a cloud model: as few as the model's
+ * per-request limit (`params.n.max`, default 1) allows. Core runs up to
+ * 4 cloud jobs at a time.
  */
 export function cloudBatches(count: number, model: CoreMediaModel | undefined): number[] {
-  const nMax = model?.params?.n?.max ?? 1;
-  return count <= nMax ? [count] : Array.from({ length: count }, () => 1);
+  const nMax = nMaxOf(model);
+  const batches: number[] = [];
+  for (let left = count; left > 0; left -= nMax) batches.push(Math.min(nMax, left));
+  return batches;
 }
 
 /** The ratio when the model takes it; undefined (the model's default) when its catalog lists others only. */
@@ -165,86 +178,89 @@ function plural(count: number): string { return count === 1 ? "1 image" : `${cou
  * session's working folder. The agent shows them by passing the paths
  * to `reply { attachments }`.
  *
- * With an OpenRouter key the picture is made in the cloud (paid, so it
- * asks for approval below approval level 3); `model: "local"`, or no
- * key, uses the image model loaded in Core on this computer (free, no
- * question). The first image on a computer without Core downloads the
- * Core binary once.
+ * The picture is made in the cloud with the user's OpenRouter key (paid,
+ * so it asks for approval below approval level 3). Local image models
+ * come with ATO-411; until then `model: "local"` and a missing key get a
+ * plain answer without touching Core. The first image on a computer
+ * without Core downloads the Core binary once, which the approval says.
  */
 export function buildImageGenerateTool(options: ImageGenerateToolOptions): ToolDefinition {
   const withCore = options.withCore ?? withImageCore;
   const now = options.now ?? (() => new Date());
   return {
     name: IMAGE_GENERATE_TOOL,
-    description: "Generate pictures from a text prompt and save them as PNG files in the working folder. Show them to the user by passing the returned paths to reply.attachments.",
+    description: "Generate pictures from a text prompt and save them as image files in the working folder. Show them to the user by passing the returned paths to reply.attachments.",
     readonly: false,
     async run(rawArgs, ctx): Promise<CompressedToolResult> {
       let args: ParsedArgs;
       try { args = parseArgs(rawArgs); }
       catch (err) { return errorResult((err as Error).message); }
 
-      const key = args.local ? undefined : options.openRouterKey();
-      const cloud = key !== undefined;
-      if (args.model && !cloud) {
-        return errorResult(`Cloud model ${args.model} needs an OpenRouter API key. Add one in the provider settings, or call again without \`model\` to use a local image model.`);
-      }
+      if (args.local) return errorResult(NO_LOCAL_YET);
+      const key = options.openRouterKey();
+      if (key === undefined) return errorResult(NO_KEY);
+      const apiKey: string = key;
 
-      if (cloud) {
-        await requireApproval(options, {
-          sessionId: ctx.sessionId,
-          tool: IMAGE_GENERATE_TOOL,
-          category: "paid_generation",
-          reason: `generate ${plural(args.count)} on OpenRouter with ${args.model ?? "the default image model"} (paid by the OpenRouter account)`,
-          preview: args.prompt,
-          affectedResources: ["openrouter.ai"],
-        }, ctx.signal);
-      }
+      const dataDir = options.dataDir();
+      const installFirst = (options.needsCoreInstall ?? imageCoreNeedsInstall)(dataDir);
+      await requireApproval(options, {
+        sessionId: ctx.sessionId,
+        tool: IMAGE_GENERATE_TOOL,
+        category: "paid_generation",
+        reason: `generate ${plural(args.count)} on OpenRouter with ${args.model ?? "the default image model"} (paid by the OpenRouter account) and save it in the working folder` +
+          (installFirst ? "; first downloads the Atomic Chat engine (about 100 MB)" : ""),
+        preview: args.prompt,
+        affectedResources: ["openrouter.ai"],
+      }, ctx.signal);
 
       const started = Date.now();
-      let modelId = cloud ? (args.model ?? "default") : "local";
+      // Analytics names a model only when Core's catalog lists it; a model
+      // id the user typed is reported as `custom`.
+      let modelId = args.model ?? "default";
+      let reportedModel = args.model ? "custom" : "default";
       const report = (success: boolean, count: number, errorCode?: string) => options.report?.({
-        kind: cloud ? "cloud" : "local", model: modelId, durationMs: Date.now() - started, success, count,
+        kind: "cloud", model: reportedModel, durationMs: Date.now() - started, success, count,
         ...(errorCode !== undefined ? { errorCode } : {}),
       });
 
+      let outputs: CoreImageOutput[] = [];
       try {
-        const result = await withCore(options.dataDir(), async (client, dataFolder) => {
+        const result = await withCore(dataDir, async (client) => {
           const [width, height] = RATIOS[args.ratio]!;
-          const base: CoreImageRequest = {
-            prompt: args.prompt, width, height, steps: LOCAL_STEPS, cfgScale: LOCAL_CFG_SCALE, batchSize: args.count,
-            ...(args.seed !== undefined ? { seed: args.seed } : {}),
-          };
-          if (key === undefined) {
-            await configureCoreDiffusion(client, dataFolder, ctx.signal);
-            const job = await runCoreImageJob(client, base, { signal: ctx.signal });
-            return { jobs: [job], notes: [] as string[] };
-          }
-          await registerOpenRouterMedia(client, key, ctx.signal);
+          await registerOpenRouterMedia(client, apiKey, ctx.signal);
           const models = await listCoreImageModels(client, "openrouter", ctx.signal);
           modelId = args.model ?? defaultImageModel(models);
           const info = models.find(m => m.id === modelId);
+          if (info || !args.model) reportedModel = modelId;
           const notes: string[] = [];
           const aspectRatio = cloudAspectRatio(args.ratio, info);
           if (aspectRatio === undefined) notes.push(`${modelId} does not offer ${args.ratio}, so it used its default shape.`);
           const request: CoreImageRequest = {
-            ...base,
+            prompt: args.prompt, width, height, steps: CLOUD_STEPS, cfgScale: CLOUD_CFG_SCALE, batchSize: 1,
             target: { provider: "openrouter", model: modelId },
             ...(aspectRatio ? { remote: { aspectRatio } } : {}),
           };
-          const settled = await Promise.allSettled(cloudBatches(args.count, info).map(batchSize =>
-            runCoreImageJob(client, { ...request, batchSize }, { signal: ctx.signal })));
-          const jobs = settled.flatMap(s => s.status === "fulfilled" ? [s.value] : []);
+          // Core varies the seed only inside one job: separate jobs get
+          // seed, seed+1, ... or every picture would be the same.
+          let seedOffset = 0;
+          const jobs = cloudBatches(args.count, info).map(batchSize => {
+            const seed = args.seed === undefined ? undefined : (args.seed + seedOffset) % 0x1_0000_0000;
+            seedOffset += batchSize;
+            return { ...request, batchSize, ...(seed !== undefined ? { seed } : {}) };
+          });
+          const settled = await Promise.allSettled(jobs.map(job => runCoreImageJob(client, job, { signal: ctx.signal })));
+          const done = settled.flatMap(s => s.status === "fulfilled" ? [s.value] : []);
           const failed = settled.flatMap(s => s.status === "rejected" ? [s.reason as unknown] : []);
-          if (jobs.length === 0) throw failed[0];
+          if (done.length === 0) throw failed[0];
           if (failed.length > 0) notes.push(`${failed.length} of the ${settled.length} requests failed: ${(failed[0] as Error).message}`);
-          return { jobs, notes };
+          return { jobs: done, notes };
         }, { signal: ctx.signal });
 
-        const outputs = result.jobs.flatMap((job: CoreImageJob) => job.outputs);
+        outputs = result.jobs.flatMap((job: CoreImageJob) => job.outputs);
         const paths = await saveIntoWorkingDir(outputs, ctx.workingDir, now());
         report(true, paths.length);
         const lines = [
-          `Saved ${plural(paths.length)} made with ${cloud ? `${modelId} on OpenRouter` : "the local image model"}:`,
+          `Saved ${plural(paths.length)} made with ${modelId} on OpenRouter:`,
           ...paths.map(p => `- ${p}`),
           ...result.notes,
           `To show ${paths.length === 1 ? "it" : "them"} to the user, pass ${paths.length === 1 ? "this path" : "these paths"} in reply.attachments.`,
@@ -255,7 +271,7 @@ export function buildImageGenerateTool(options: ImageGenerateToolOptions): ToolD
           output: lines.join("\n"),
           details: {
             paths,
-            kind: cloud ? "cloud" : "local",
+            kind: "cloud",
             model: modelId,
             durationMs: Date.now() - started,
             images: outputs.map(o => ({ width: o.width, height: o.height, bytes: o.sizeBytes })),
@@ -265,8 +281,12 @@ export function buildImageGenerateTool(options: ImageGenerateToolOptions): ToolD
         if (ctx.signal.aborted) { report(false, 0, "cancelled"); throw err; }
         const code = err instanceof CoreImageError ? err.code : (err as { reasonCode?: unknown })?.reasonCode;
         report(false, 0, typeof code === "string" ? code : "unknown");
-        return errorResult(err instanceof Error ? err.message : String(err), {
-          kind: cloud ? "cloud" : "local", model: modelId,
+        const message = err instanceof Error ? err.message : String(err);
+        // Pictures already paid for must not vanish with a failed copy.
+        const made = outputs.map(o => o.path);
+        return errorResult(made.length > 0 ? `${message}\nThe pictures were made and are kept at:\n${made.map(p => `- ${p}`).join("\n")}` : message, {
+          kind: "cloud", model: modelId,
+          ...(made.length > 0 ? { corePaths: made } : {}),
           ...(err instanceof CoreImageError ? { code: err.code } : {}),
         });
       }

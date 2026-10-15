@@ -201,9 +201,9 @@ export const DEFAULT_TOOL_DESCRIPTORS_B: readonly ToolDescriptor[] = [
     // (`GATED_TOOLS.image`).
     name: "image.generate",
     summary:
-      "Generate pictures from a text prompt (cloud image model via Atomic Chat Core; paid, so it may ask the user first). Saves PNG files in the working folder and returns their paths; to show them, pass the paths in reply.attachments. Write the prompt in English with subject, style, lighting and composition.",
+      "Generate pictures from a text prompt (cloud image model on OpenRouter via Atomic Chat Core; paid, so it may ask the user first). Saves image files in the working folder and returns their paths; to show them, pass the paths in reply.attachments. Write the prompt in English with subject, style, lighting and composition.",
     argsSchema:
-      '{ prompt: string, size?: string /* square|landscape|portrait or 1:1|16:9|9:16|4:3|3:4|3:2|2:3; default square */, count?: number /* 1..4, default 1 */, seed?: number, model?: string /* cloud model id; "local" = model loaded on this computer */ }',
+      '{ prompt: string, size?: string /* square|landscape|portrait or 1:1|16:9|9:16|4:3|3:4|3:2|2:3; default square */, count?: number /* 1..4, default 1 */, seed?: number, model?: string /* OpenRouter image model id; omit for the default */ }',
     examples: [
       '{"prompt":"A red fox in a snowy birch forest at dawn, soft golden light, photorealistic"}',
       '{"prompt":"Flat vector logo of a paper rocket, two colours","size":"square","count":2}',
