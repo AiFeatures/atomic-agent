@@ -65,6 +65,7 @@ describe("approval ladder", () => {
       proc_kill: 4,
       publish: 4,
       git_remote: 4,
+      fusion_fanout: 4,
       browser_nonweb: 5,
       trust_config: 5,
       email: 5,
