@@ -1,6 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 import type { DownloadFileOptions } from "../downloads/download-file.js";
-import { acquireCoreLease, CoreRequestError, ensureCore, type CoreControlClient } from "./core-client.js";
+import { acquireCoreLease, connectCore, CoreRequestError, ensureCore, type CoreControlClient } from "./core-client.js";
 import { shutdownIdleCoreClient } from "./core-idle.js";
 import { installCore, isCoreInstalled } from "./core-install.js";
 import { withCoreOperation } from "./core-operation.js";
@@ -273,13 +273,17 @@ export function imageCoreNeedsInstall(dataDir: string): boolean {
  * the start and the lease. The generation itself runs outside the lock,
  * so it never blocks a model load for minutes.
  *
- * When the active Core is an older pin, this one was started beside it
- * only for pictures, and nothing else would ever stop it (idle stops look
- * at the active version): it is shut down again when idle.
+ * A Core this call started (none was running), or one beside an older
+ * active pin, is shut down again when idle: on a cloud route nothing else
+ * would stop it (quit and idle stops look only at the active version, and
+ * only for the Atomic Core engine), and it outlived the app in the live
+ * check. One that was already running for a model is left alone, and Core
+ * itself refuses while a model session or another client remains.
  */
 export async function withImageCore<T>(dataDir: string, fn: (client: CoreControlClient, dataFolder: string) => Promise<T>, opts: WithImageCoreOptions = {}): Promise<T> {
   const version = CORE_VERSION;
-  const { client, lease } = await withCoreOperation(dataDir, async () => {
+  const { client, lease, startedHere } = await withCoreOperation(dataDir, async () => {
+    const running = await connectCore(dataDir, version).catch(() => null);
     if (!isCoreInstalled(dataDir, version)) {
       opts.onCoreInstall?.();
       await installCore(dataDir, version, {
@@ -288,12 +292,12 @@ export async function withImageCore<T>(dataDir: string, fn: (client: CoreControl
       });
     }
     const started = await ensureCore(dataDir, version, opts.signal);
-    return { client: started, lease: await acquireCoreLease(started) };
+    return { client: started, lease: await acquireCoreLease(started), startedHere: running === null };
   }, { waitMs: opts.waitMs ?? IMAGE_CORE_WAIT_MS });
   try { return await fn(client, coreDataDir(dataDir, version)); }
   finally {
     await lease.release();
-    if (activeCoreVersion(dataDir) !== version) {
+    if (startedHere || activeCoreVersion(dataDir) !== version) {
       await withCoreOperation(dataDir, () => shutdownIdleCoreClient(client), { waitMs: 2_000 }).catch(() => false);
     }
   }
